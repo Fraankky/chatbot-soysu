@@ -6,5 +6,7 @@ projects:
     - "packages/*"
     - "moon.yml"
 
+defaultProject: "bot"
+
 vcs:
   defaultBranch: "main"

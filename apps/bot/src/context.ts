@@ -15,6 +15,11 @@ export const rag = new PgRAG(db, new OpenAIEmbedder(client));
 const knowledgeDir = join(dirname(fileURLToPath(import.meta.url)), "..", "knowledge");
 
 export async function loadKnowledge(): Promise<void> {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key || key === "your_api_key") {
+    console.warn("WARN: OPENAI_API_KEY belum diatur — knowledge base di-skip.");
+    return;
+  }
   const files = ["products.md", "storage.md", "delivery.md"];
   const docs = await Promise.all(
     files.map(async (file) => ({
