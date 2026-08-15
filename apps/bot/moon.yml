@@ -8,3 +8,7 @@ tasks:
     command: "tsx src/index.ts"
     options:
       cache: false
+  dev:wa:
+    command: "tsx src/index-gateway.ts"
+    options:
+      cache: false

@@ -6,9 +6,7 @@ import {
   attachPaymentProof,
   checkout,
   clearCart,
-  expireDuePayments,
   getOrder,
-  listOrders,
   listPendingPayments,
   markPaid,
 } from "@soysu/database";
