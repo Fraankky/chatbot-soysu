@@ -463,6 +463,11 @@ export async function resolveHandover(db: DbLike, id: string, adminId: string) {
   return row;
 }
 
+export async function getConversation(db: DbLike, id: string) {
+  const [row] = await db.select().from(conversations).where(eq(conversations.id, id));
+  return row;
+}
+
 export async function listMessages(db: DbLike, conversationId: string, limit = 50) {
   return db
     .select()

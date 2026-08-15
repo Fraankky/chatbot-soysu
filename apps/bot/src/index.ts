@@ -3,7 +3,7 @@ import "dotenv/config";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 
-import { ensureConversation, saveMessage } from "@soysu/database";
+import { ensureConversation, getConversation, saveMessage } from "@soysu/database";
 
 import { createAgent } from "./agent.js";
 import { db, loadKnowledge } from "./context.js";
@@ -26,6 +26,11 @@ while (true) {
   if (message === "") continue;
 
   await saveMessage(db, conv.id, "user", message);
+  const current = await getConversation(db, conv.id);
+  if (current?.botPaused) {
+    console.log("\nBot: (handover aktif — admin yang menangani)\n");
+    continue;
+  }
   const response = await agent.prompt(message).send();
   await saveMessage(db, conv.id, "bot", response.output);
   console.log(`\nBot: ${response.output}\n`);
