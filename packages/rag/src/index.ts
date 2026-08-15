@@ -6,3 +6,5 @@ export { VectorStore, cosine } from "./store.js";
 export type { RetrievedChunk } from "./store.js";
 export { RAG } from "./rag.js";
 export type { RAGDoc } from "./rag.js";
+export { PgRAG } from "./pg-rag.js";
+export type { RetrievedContext } from "./pg-rag.js";

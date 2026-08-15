@@ -244,14 +244,18 @@ export const handoverEvents = pgTable("handover_events", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-export const kbDocuments = pgTable("kb_documents", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  title: text("title").notNull(),
-  category: text("category").notNull().default("general"),
-  status: kbStatusEnum("status").notNull().default("pending"),
-  activeVersionId: uuid("active_version_id"),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+export const kbDocuments = pgTable(
+  "kb_documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    category: text("category").notNull().default("general"),
+    status: kbStatusEnum("status").notNull().default("pending"),
+    activeVersionId: uuid("active_version_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("kb_documents_title").on(table.title)],
+);
 
 export const kbDocumentVersions = pgTable("kb_document_versions", {
   id: uuid("id").primaryKey().defaultRandom(),

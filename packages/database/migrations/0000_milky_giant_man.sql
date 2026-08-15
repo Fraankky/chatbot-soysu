@@ -1,4 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS vector;--> statement-breakpoint
+CREATE EXTENSION IF NOT EXISTS pg_trgm;--> statement-breakpoint
+CREATE EXTENSION IF NOT EXISTS vector;--> statement-breakpoint
 CREATE TYPE "public"."channel" AS ENUM('whatsapp', 'telegram');--> statement-breakpoint
 CREATE TYPE "public"."handover_status" AS ENUM('open', 'assigned', 'waiting_customer', 'resolved');--> statement-breakpoint
 CREATE TYPE "public"."kb_status" AS ENUM('pending', 'indexing', 'active', 'failed');--> statement-breakpoint

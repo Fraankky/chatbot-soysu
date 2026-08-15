@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "kb_documents_title" ON "kb_documents" USING btree ("title");

@@ -137,6 +137,12 @@ importers:
       '@anvia/openai':
         specifier: ^0.5.1
         version: 0.5.1(@anvia/core@0.26.0)(zod@4.4.3)
+      '@soysu/database':
+        specifier: workspace:*
+        version: link:../database
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(postgres@3.4.9)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
