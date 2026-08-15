@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "wa": "tsx src/index-gateway.ts"
   },
   "dependencies": {
     "@anvia/core": "^0.26.0",

@@ -5,8 +5,8 @@ stack: "frontend"
 
 tasks:
   dev:
-    command: "vite"
+    command: "pnpm dev"
     options:
       cache: false
   build:
-    command: "vite build"
+    command: "pnpm build"

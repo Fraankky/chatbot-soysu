@@ -63,6 +63,10 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+    devDependencies:
+      tsx:
+        specifier: ^4.23.12
+        version: 4.23.12
 
   apps/admin-web:
     dependencies:

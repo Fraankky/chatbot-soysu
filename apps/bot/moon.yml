@@ -5,10 +5,10 @@ stack: "backend"
 
 tasks:
   dev:
-    command: "tsx src/index.ts"
+    command: "pnpm dev"
     options:
       cache: false
   wa:
-    command: "tsx src/index-gateway.ts"
+    command: "pnpm wa"
     options:
       cache: false

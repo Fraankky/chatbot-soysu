@@ -5,6 +5,6 @@ stack: "backend"
 
 tasks:
   dev:
-    command: "tsx src/index.ts"
+    command: "pnpm dev"
     options:
       cache: false
