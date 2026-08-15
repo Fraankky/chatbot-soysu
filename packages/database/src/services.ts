@@ -5,16 +5,19 @@ import {
   carts,
   conversations,
   customers,
+  handoverEvents,
+  handovers,
   messages,
   notifications,
   orderItems,
   orders,
   payments,
   products,
+  ragEvents,
   stockMovements,
   stockReservations,
 } from "./schema.js";
-import type { OrderStatus, PaymentMethod, PaymentStatus } from "@soysu/shared";
+import type { HandoverStatus, OrderStatus, PaymentMethod, PaymentStatus } from "@soysu/shared";
 
 type Tx = Parameters<Parameters<DB["transaction"]>[0]>[0];
 type DbLike = DB | Tx;
@@ -405,4 +408,184 @@ export async function listNotifications(db: DbLike, unreadOnly = false) {
 
 export async function markNotificationRead(db: DbLike, id: string) {
   await db.update(notifications).set({ isRead: true }).where(eq(notifications.id, id));
+}
+
+export async function listHandovers(db: DbLike, status?: HandoverStatus) {
+  const rows = status
+    ? await db
+        .select()
+        .from(handovers)
+        .where(eq(handovers.status, status))
+        .orderBy(handovers.createdAt)
+    : await db.select().from(handovers).orderBy(handovers.createdAt);
+  return rows;
+}
+
+export async function createHandover(db: DbLike, conversationId: string, reason: string) {
+  const [row] = await db.insert(handovers).values({ conversationId, reason }).returning();
+  await db
+    .update(conversations)
+    .set({ botPaused: true })
+    .where(eq(conversations.id, conversationId));
+  await db.insert(handoverEvents).values({ handoverId: row.id, event: "opened", actor: "system" });
+  await createNotification(db, {
+    type: "handover_request",
+    conversationId,
+    title: "Butuh manusia",
+    message: `Percakapan meminta handover: ${reason}`,
+  });
+  return row;
+}
+
+export async function assignHandover(db: DbLike, id: string, adminId: string) {
+  const [row] = await db
+    .update(handovers)
+    .set({ status: "assigned", assignedTo: adminId })
+    .where(eq(handovers.id, id))
+    .returning();
+  if (!row) throw new Error("Handover tidak ditemukan");
+  await db.insert(handoverEvents).values({ handoverId: id, event: "assigned", actor: adminId });
+  return row;
+}
+
+export async function resolveHandover(db: DbLike, id: string, adminId: string) {
+  const [row] = await db
+    .update(handovers)
+    .set({ status: "resolved", resolvedAt: new Date() })
+    .where(eq(handovers.id, id))
+    .returning();
+  if (!row) throw new Error("Handover tidak ditemukan");
+  await db
+    .update(conversations)
+    .set({ botPaused: false })
+    .where(eq(conversations.id, row.conversationId));
+  await db.insert(handoverEvents).values({ handoverId: id, event: "resolved", actor: adminId });
+  return row;
+}
+
+export async function listMessages(db: DbLike, conversationId: string, limit = 50) {
+  return db
+    .select()
+    .from(messages)
+    .where(eq(messages.conversationId, conversationId))
+    .orderBy(messages.createdAt)
+    .limit(limit);
+}
+
+export interface ConversationAnalytics {
+  daily: Array<{ date: string; count: number }>;
+  total: number;
+  active: number;
+  botMessages: number;
+  humanMessages: number;
+}
+
+export async function conversationsAnalytics(
+  db: DbLike,
+  from: Date,
+  to: Date,
+): Promise<ConversationAnalytics> {
+  const daily = await db.execute<{ date: string; count: number }>(sql`
+    SELECT to_char(created_at, 'YYYY-MM-DD') AS date, COUNT(*)::int AS count
+    FROM messages
+    WHERE created_at >= ${from.toISOString()} AND created_at < ${to.toISOString()}
+    GROUP BY date ORDER BY date`);
+  const totals = await db.execute<{
+    total: number;
+    active: number;
+    bot: number;
+    human: number;
+  }>(sql`
+    SELECT
+      (SELECT COUNT(*)::int FROM messages WHERE created_at >= ${from.toISOString()} AND created_at < ${to.toISOString()}) AS total,
+      (SELECT COUNT(*)::int FROM conversations) AS active,
+      (SELECT COUNT(*)::int FROM messages WHERE role = 'bot' AND created_at >= ${from.toISOString()} AND created_at < ${to.toISOString()}) AS bot,
+      (SELECT COUNT(*)::int FROM messages WHERE role = 'human' AND created_at >= ${from.toISOString()} AND created_at < ${to.toISOString()}) AS human`);
+  const t = totals[0];
+  return {
+    daily: daily.map((r) => ({ date: r.date, count: r.count })),
+    total: t?.total ?? 0,
+    active: t?.active ?? 0,
+    botMessages: t?.bot ?? 0,
+    humanMessages: t?.human ?? 0,
+  };
+}
+
+export interface KnowledgeAnalytics {
+  queriesPerDay: Array<{ date: string; count: number }>;
+  totalQueries: number;
+  noAnswerRate: number;
+  avgLatencyMs: number;
+  activeDocs: number;
+  docsByCategory: Array<{ category: string; count: number }>;
+}
+
+export async function knowledgeAnalytics(
+  db: DbLike,
+  from: Date,
+  to: Date,
+): Promise<KnowledgeAnalytics> {
+  const daily = await db.execute<{ date: string; count: number }>(sql`
+    SELECT to_char(created_at, 'YYYY-MM-DD') AS date, COUNT(*)::int AS count
+    FROM rag_events
+    WHERE created_at >= ${from.toISOString()} AND created_at < ${to.toISOString()}
+    GROUP BY date ORDER BY date`);
+  const stats = await db.execute<{ total: number; noAnswer: number; avg: number }>(sql`
+    SELECT
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE no_answer)::int AS no_answer,
+      COALESCE(AVG(latency_ms), 0)::int AS avg
+    FROM rag_events
+    WHERE created_at >= ${from.toISOString()} AND created_at < ${to.toISOString()}`);
+  const docs = await db.execute<{ category: string; count: number }>(sql`
+    SELECT category, COUNT(*)::int AS count FROM kb_documents WHERE status = 'active' GROUP BY category`);
+  const s = stats[0];
+  return {
+    queriesPerDay: daily.map((r) => ({ date: r.date, count: r.count })),
+    totalQueries: s?.total ?? 0,
+    noAnswerRate: (s?.total ?? 0) > 0 ? (s?.noAnswer ?? 0) / (s?.total ?? 1) : 0,
+    avgLatencyMs: s?.avg ?? 0,
+    activeDocs: docs.reduce((sum, d) => sum + d.count, 0),
+    docsByCategory: docs.map((d) => ({ category: d.category, count: d.count })),
+  };
+}
+
+export async function recordRagEvent(
+  db: DbLike,
+  e: {
+    conversationId?: string;
+    query: string;
+    topScore?: number;
+    noAnswer?: boolean;
+    latencyMs?: number;
+  },
+) {
+  await db.insert(ragEvents).values({
+    conversationId: e.conversationId ?? null,
+    query: e.query,
+    topScore: e.topScore != null ? String(e.topScore) : null,
+    noAnswer: e.noAnswer ?? false,
+    latencyMs: e.latencyMs ?? null,
+  });
+}
+
+export async function dashboardSummary(db: DbLike) {
+  const today = await db.execute<{ count: number }>(sql`
+    SELECT COUNT(*)::int AS count FROM orders WHERE created_at >= date_trunc('day', now())`);
+  const revenue = await db.execute<{ sum: number }>(sql`
+    SELECT COALESCE(SUM(total), 0)::int AS sum FROM orders
+    WHERE payment_status = 'paid' OR status IN ('completed', 'processing')`);
+  const pendingPayments = await db.execute<{ count: number }>(sql`
+    SELECT COUNT(*)::int AS count FROM payments WHERE status = 'pending'`);
+  const lowStock = await db.execute<{ count: number }>(sql`
+    SELECT COUNT(*)::int AS count FROM products WHERE stock <= 5`);
+  const unread = await db.execute<{ count: number }>(sql`
+    SELECT COUNT(*)::int AS count FROM notifications WHERE is_read = false`);
+  return {
+    ordersToday: today[0]?.count ?? 0,
+    revenue: revenue[0]?.sum ?? 0,
+    pendingPayments: pendingPayments[0]?.count ?? 0,
+    lowStock: lowStock[0]?.count ?? 0,
+    unreadNotifications: unread[0]?.count ?? 0,
+  };
 }
