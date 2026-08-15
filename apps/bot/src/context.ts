@@ -3,10 +3,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { OpenAIClient } from "@anvia/openai";
-import { OpenAIEmbedder, RAG } from "@soysu/rag";
+import { createDb } from "@soysu/database";
+import type { DB } from "@soysu/database";
+import { OpenAIEmbedder, PgRAG } from "@soysu/rag";
+
+export const db: DB = createDb();
 
 const client = new OpenAIClient({ apiKey: process.env.OPENAI_API_KEY });
-export const rag = new RAG(new OpenAIEmbedder(client));
+export const rag = new PgRAG(db, new OpenAIEmbedder(client));
 
 const knowledgeDir = join(dirname(fileURLToPath(import.meta.url)), "..", "knowledge");
 

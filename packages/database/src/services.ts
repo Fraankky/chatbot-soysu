@@ -263,7 +263,9 @@ export async function checkout(db: DbLike, input: CheckoutInput) {
     message: `Order ${orderId} menunggu diproses (${input.paymentMethod})`,
   });
 
-  return getOrder(db, orderId);
+  const order = await getOrder(db, orderId);
+  if (!order) throw new Error("Order gagal dibuat");
+  return order;
 }
 
 export async function getOrder(db: DbLike, orderId: string) {
