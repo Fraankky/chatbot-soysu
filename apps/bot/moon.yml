@@ -1,0 +1,10 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+language: "typescript"
+stack: "backend"
+
+tasks:
+  dev:
+    command: "tsx src/index.ts"
+    options:
+      cache: false
