@@ -568,18 +568,18 @@ normal:   order status update, indexing_finished
 
 ## 9. MVP Scope (yang dibangun pertama)
 
-1. Perbaiki `pnpm-workspace.yaml` + tambah `packages/database`.
-2. Docker Compose: PostgreSQL+pgvector, Redis.
-3. Drizzle schema + migrations + repositories/services.
-4. Migrasi `checkStock` dari seed ke DB; cart & order transaction.
-5. RAG persistent (pgvector) + lazy embed.
-6. Baileys gateway + Redis debounce + typing/outbound.
-7. Anvia agent: `ragSearch`, `checkStock`, `cartManager`, `shippingCalculator`, `checkout`.
-8. Payment MVP: COD + transfer/QRIS manual + verifikasi admin.
-9. Admin API + UI: Overview, Orders, Payments, Notifications, Products/Stock, Knowledge.
-10. Graph dinamis: memori & knowledge.
-11. Basic human handover.
-12. Unit/integration test utama.
+1. [x] Perbaiki `pnpm-workspace.yaml` + tambah `packages/database`.
+2. [x] Docker Compose: PostgreSQL+pgvector, Redis.
+3. [x] Drizzle schema + migrations + repositories/services.
+4. [x] Migrasi `checkStock` dari seed ke DB; cart & order transaction.
+5. [x] RAG persistent (pgvector) + lazy embed.
+6. [x] Baileys gateway + Redis debounce + typing/outbound.
+7. [x] Anvia agent: `ragSearch`, `checkStock`, `cartManager`, `shippingCalculator`, `checkout`.
+8. [x] Payment MVP: COD + transfer/QRIS manual + verifikasi admin.
+9. [x] Admin API + UI: Overview, Orders, Payments, Notifications, Products/Stock, Knowledge.
+10. [x] Graph dinamis: memori & knowledge.
+11. [x] Basic human handover.
+12. [x] Unit/integration test utama.
 
 **Ditunda:** Telegram, GLM/ZAI, multi-provider fallback kompleks, reranker Cohere, receipt image, migrasi Next.js, payment gateway, analytics lanjutan.
 
