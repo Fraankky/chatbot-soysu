@@ -1,0 +1,12 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+language: "typescript"
+stack: "frontend"
+
+tasks:
+  dev:
+    command: "vite"
+    options:
+      cache: false
+  build:
+    command: "vite build"
