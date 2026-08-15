@@ -29,26 +29,29 @@ Panduan kerja untuk AI coding agents di repository ini.
 ## Struktur Project
 
 - `apps/bot` — Anvia agent runtime (CLI/WA), knowledge base di `apps/bot/knowledge/`.
-- `apps/admin-api` — Hono REST API (admin BE).
+- `apps/admin-api` — Hono REST API (admin BE, auth bearer `ADMIN_TOKEN`).
 - `apps/admin-web` — Vite + React dashboard (admin FE).
-- `packages/rag` — RAG system (chunker, embedder, hybrid vector store).
+- `packages/database` — Drizzle schema, migrations, services (cart, checkout, payment, handover, analytics).
+- `packages/rag` — RAG system (chunker, embedder, pgvector retriever).
 - `packages/shared` — shared types + seed data.
-- `docs/` — PRD (`context.md`) & arsitektur (`context-arch.md`).
-- Doc PRD/arsitektur ini adalah sumber kebenaran bisnis — sinkronkan bila strukturnya berubah.
+- `docs/` — PRD (`context.md`), arsitektur (`context-arch.md`), plan eksekusi (`implementation-plan.md`).
+- Doc PRD/arsitektur/plan ini adalah sumber kebenaran bisnis — sinkronkan bila strukturnya berubah.
 
 ## Commands
 
 Semua task terpusat lewat moonrepo (dijalankan dari root):
 
 ```bash
-pnpm install            # install semua workspace deps
-pnpm moon run :format   # oxfmt seluruh repo
-pnpm moon run :lint     # oxlint seluruh repo
-pnpm moon run :typecheck
+pnpm install                    # install semua workspace deps
+docker compose up -d            # postgres (5433) + redis (6380)
 pnpm moon run :format :lint :typecheck   # verifikasi lengkap
-pnpm moon run bot:dev          # jalankan chatbot CLI
-pnpm moon run admin-api:dev    # admin API :8787
-pnpm moon run admin-web:dev    # admin web (proxy /api → :8787)
+pnpm --filter @soysu/database run db:generate   # buat migration baru
+pnpm --filter @soysu/database run db:migrate    # apply migration
+pnpm tsx packages/database/scripts/seed.ts      # seed products
+pnpm --filter @soysu/database run test          # integrasi service (butuh DB)
+pnpm moon run bot:dev           # jalankan chatbot CLI (butuh OPENAI_API_KEY)
+pnpm moon run admin-api:dev     # admin API :8787 (butuh DB, ADMIN_TOKEN)
+pnpm moon run admin-web:dev     # admin web (proxy /api → :8787)
 ```
 
 Verifikasi wajib setelah mengubah kode: `pnpm moon run :format :lint :typecheck`.

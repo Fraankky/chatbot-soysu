@@ -10,7 +10,8 @@
   "scripts": {
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@soysu/shared": "workspace:*",

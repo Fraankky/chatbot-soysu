@@ -15,3 +15,7 @@ tasks:
     command: "tsc -p tsconfig.json --noEmit"
     options:
       cache: false
+  test:
+    command: "pnpm --filter @soysu/database run test"
+    options:
+      cache: false
