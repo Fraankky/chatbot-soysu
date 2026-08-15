@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "moon run dev",
+    "dev": "moon run :dev",
     "dev:bot": "moon run bot:dev",
     "dev:wa": "moon run bot:wa",
     "dev:admin-api": "moon run admin-api:dev",
