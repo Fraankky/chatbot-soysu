@@ -1,0 +1,17 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+language: "typescript"
+
+tasks:
+  format:
+    command: "oxfmt ."
+    options:
+      cache: false
+  lint:
+    command: "oxlint ."
+    options:
+      cache: false
+  typecheck:
+    command: "tsc -p tsconfig.json --noEmit"
+    options:
+      cache: false

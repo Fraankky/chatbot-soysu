@@ -1,0 +1,13 @@
+$schema: "https://moonrepo.dev/schemas/toolchain.json"
+
+proto:
+  version: "0.58.2"
+
+node:
+  version: "22.23.1"
+  packageManager: "pnpm"
+  addEnginesConstraint: true
+  dependencyVersionFormat: "workspace-caret"
+
+pnpm:
+  version: "11.0.8"

@@ -1,0 +1,10 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+onlyBuiltDependencies:
+  - esbuild
+  - "@parcel/watcher"
+
+allowBuilds:
+  esbuild: set this to true or false
