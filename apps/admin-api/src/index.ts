@@ -1,55 +1,79 @@
 import { serve } from "@hono/node-server";
+import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { SEED_ORDERS, SEED_PRODUCTS } from "@soysu/shared";
-import type { Order, Product } from "@soysu/shared";
+import { z } from "zod";
+import { createDb } from "@soysu/database";
+import { orders, products } from "@soysu/database/schema";
 
-const products: Product[] = [...SEED_PRODUCTS];
-const orders: Order[] = [...SEED_ORDERS];
-
+const db = createDb();
 const app = new Hono();
 
 app.use("/api/*", cors());
 
 app.get("/health", (c) => c.json({ ok: true }));
 
-app.get("/api/products", (c) => c.json(products));
+const productSchema = z.object({
+  name: z.string().min(1),
+  flavor: z.string().min(1),
+  sweetnessOptions: z.array(z.string()).default(["Normal"]),
+  price: z.number().int().positive(),
+  stock: z.number().int().min(0).default(0),
+});
+
+const updateSchema = z.object({
+  name: z.string().min(1).optional(),
+  flavor: z.string().min(1).optional(),
+  sweetnessOptions: z.array(z.string()).optional(),
+  price: z.number().int().positive().optional(),
+  stock: z.number().int().min(0).optional(),
+});
+
+app.get("/api/products", async (c) => {
+  const rows = await db.select().from(products).orderBy(products.id);
+  return c.json(rows);
+});
 
 app.post("/api/products", async (c) => {
   const body = await c.req.json().catch(() => null);
-  if (!body?.name || !body?.flavor || typeof body.price !== "number") {
-    return c.json({ error: "name, flavor, and price are required" }, 400);
-  }
-  const product: Product = {
-    id: `soysu-${String(products.length + 1).padStart(3, "0")}`,
-    name: String(body.name),
-    flavor: String(body.flavor),
-    sweetnessOptions: body.sweetnessOptions ?? ["Normal"],
-    price: body.price,
-    stock: body.stock ?? 0,
-  };
-  products.push(product);
-  return c.json(product, 201);
+  const parsed = productSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+  const id = `soysu-${String((await db.select().from(products)).length + 1).padStart(3, "0")}`;
+  const [row] = await db
+    .insert(products)
+    .values({ id, ...parsed.data })
+    .returning();
+  return c.json(row, 201);
 });
 
-app.put("/api/products/:id", async (c) => {
-  const product = products.find((p) => p.id === c.req.param("id"));
-  if (!product) return c.json({ error: "product not found" }, 404);
-
+app.patch("/api/products/:id", async (c) => {
   const body = await c.req.json().catch(() => null);
-  if (typeof body.stock === "number") product.stock = body.stock;
-  if (typeof body.price === "number") product.price = body.price;
-  return c.json(product);
+  const parsed = updateSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+  const [row] = await db
+    .update(products)
+    .set({ ...parsed.data, updatedAt: new Date() })
+    .where(eq(products.id, c.req.param("id")))
+    .returning();
+  if (!row) return c.json({ error: "product not found" }, 404);
+  return c.json(row);
 });
 
-app.delete("/api/products/:id", (c) => {
-  const index = products.findIndex((p) => p.id === c.req.param("id"));
-  if (index === -1) return c.json({ error: "product not found" }, 404);
-  const [removed] = products.splice(index, 1);
-  return c.json(removed);
+app.delete("/api/products/:id", async (c) => {
+  const [row] = await db
+    .delete(products)
+    .where(eq(products.id, c.req.param("id")))
+    .returning();
+  if (!row) return c.json({ error: "product not found" }, 404);
+  return c.json(row);
 });
 
-app.get("/api/orders", (c) => c.json(orders));
+app.get("/api/orders", async (c) => {
+  const rows = await db.select().from(orders).orderBy(orders.createdAt);
+  return c.json(rows);
+});
 
 const port = Number(process.env.PORT ?? 8787);
 

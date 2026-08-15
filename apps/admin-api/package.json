@@ -8,7 +8,10 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
+    "@soysu/database": "workspace:*",
     "@soysu/shared": "workspace:*",
-    "hono": "^4.13.2"
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.13.2",
+    "zod": "^4.4.3"
   }
 }

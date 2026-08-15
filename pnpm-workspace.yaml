@@ -2,9 +2,7 @@ packages:
   - "apps/*"
   - "packages/*"
 
-onlyBuiltDependencies:
-  - esbuild
-  - "@parcel/watcher"
-
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
+  "@parcel/watcher": true
+  "@napi-rs/canvas": true

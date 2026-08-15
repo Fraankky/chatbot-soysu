@@ -1,0 +1,21 @@
+{
+  "name": "@soysu/database",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts"
+  },
+  "scripts": {
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@soysu/shared": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "ioredis": "^6.0.0",
+    "postgres": "^3.4.9"
+  }
+}
