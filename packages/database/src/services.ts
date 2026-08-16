@@ -16,6 +16,7 @@ import {
   ragEvents,
   stockMovements,
   stockReservations,
+  waConnections,
 } from "./schema.js";
 import type { HandoverStatus, OrderStatus, PaymentMethod, PaymentStatus } from "@soysu/shared";
 
@@ -23,6 +24,35 @@ type Tx = Parameters<Parameters<DB["transaction"]>[0]>[0];
 type DbLike = DB | Tx;
 
 export const PAYMENT_TTL_MINUTES = 30;
+
+export type WhatsAppStatus =
+  | "not_paired"
+  | "qr_ready"
+  | "connecting"
+  | "connected"
+  | "disconnected";
+
+export async function getWhatsAppConnection(db: DbLike, id = "default") {
+  const [row] = await db.select().from(waConnections).where(eq(waConnections.id, id));
+  return row ?? null;
+}
+
+export async function updateWhatsAppConnection(
+  db: DbLike,
+  id: string,
+  status: WhatsAppStatus,
+  fields: Partial<typeof waConnections.$inferInsert> = {},
+) {
+  const [row] = await db
+    .insert(waConnections)
+    .values({ id, status, ...fields, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: waConnections.id,
+      set: { status, ...fields, updatedAt: new Date() },
+    })
+    .returning();
+  return row;
+}
 
 function orderNumber(): string {
   return `ORD-${Date.now().toString(36).toUpperCase()}`;

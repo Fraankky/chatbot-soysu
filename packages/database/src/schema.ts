@@ -107,6 +107,18 @@ export const waAuthSessions = pgTable("wa_auth_sessions", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const waConnections = pgTable("wa_connections", {
+  id: text("id").primaryKey(),
+  status: text("status").notNull().default("not_paired"),
+  phoneNumber: text("phone_number"),
+  deviceName: text("device_name"),
+  lastQrAt: timestamp("last_qr_at", { withTimezone: true }),
+  connectedAt: timestamp("connected_at", { withTimezone: true }),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  lastError: text("last_error"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const products = pgTable("products", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
