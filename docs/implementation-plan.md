@@ -2,6 +2,8 @@
 
 Status: Living document. Sumber kebenaran eksekusi; sinkron dengan `docs/context.md` (PRD) dan `docs/context-arch.md` (arsitektur).
 
+Revisi arah pairing WhatsApp, dual-channel gateway, memory, dan orchestration ada di [`docs/revision-plan.md`](./revision-plan.md).
+
 Dokumen ini memuat rencana eksekusi lengkap: keputusan MVP, arsitektur, fase implementasi, kontrak, analytics dashboard, notifikasi, dan desain pembayaran.
 
 ---
