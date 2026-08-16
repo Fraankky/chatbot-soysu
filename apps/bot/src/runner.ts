@@ -20,28 +20,35 @@ function agentFor(conversationId: string) {
 }
 
 export function createRunner(send: (text: string, conversationId: string) => Promise<void>) {
-  const debouncer = new Debouncer(async (burst) => {
-    const conv = await ensureConversation(db, "whatsapp", burst.conversationId);
+  const runAgent = async (conversationId: string, prompt: string, saveUser = false) => {
+    const conv = await ensureConversation(db, "whatsapp", conversationId);
     const current = await getConversation(db, conv.id);
-    if (current?.botPaused) return;
-
-    const prompt = burst.messages.join("\n");
+    if (current?.botPaused) return "Bot sedang di-pause karena handover aktif.";
+    if (saveUser) await saveMessage(db, conv.id, "user", prompt);
     const agent = agentFor(conv.id);
     const response = await agent.prompt(prompt).send();
     await saveMessage(db, conv.id, "bot", response.output);
-    await send(response.output, burst.conversationId);
+    return response.output;
+  };
+
+  const debouncer = new Debouncer(async (burst) => {
+    const prompt = burst.messages.join("\n");
+    const response = await runAgent(burst.conversationId, prompt);
+    await send(response, burst.conversationId);
   });
 
   const handleInbound = async (msg: InboundMessage) => {
     const conv = await ensureConversation(db, msg.channel, msg.conversationId);
     await saveMessage(db, conv.id, "user", msg.text, msg.mediaType, msg.externalMessageId);
-    await debouncer.push(conv.id, msg.text);
+    await debouncer.push(msg.conversationId, msg.text);
   };
 
   return {
     connect: () => debouncer.connect(),
     close: () => debouncer.quit(),
     handleInbound,
+    handlePlayground: (conversationId: string, prompt: string) =>
+      runAgent(conversationId, prompt, true),
   };
 }
 

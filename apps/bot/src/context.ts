@@ -9,8 +9,14 @@ import { OpenAIEmbedder, PgRAG } from "@soysu/rag";
 
 export const db: DB = createDb();
 
-const client = new OpenAIClient({ apiKey: process.env.OPENAI_API_KEY });
-export const rag = new PgRAG(db, new OpenAIEmbedder(client));
+const client = new OpenAIClient({
+  apiKey: process.env.OPENAI_API_KEY,
+  baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
+});
+export const rag = new PgRAG(
+  db,
+  new OpenAIEmbedder(client, process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small"),
+);
 
 const knowledgeDir = join(dirname(fileURLToPath(import.meta.url)), "..", "knowledge");
 

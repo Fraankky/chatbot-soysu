@@ -7,6 +7,7 @@ import {
   attachPaymentProof,
   checkout,
   ensureConversation,
+  getCart,
   listCartItems,
   removeCartItem,
   updateCartItem,
@@ -28,7 +29,8 @@ async function findProduct(flavor: string) {
 }
 
 async function cartSummary(dbClient: DB, conversationId: string): Promise<string> {
-  const items = await listCartItems(dbClient, conversationId);
+  const cart = await getCart(dbClient, conversationId);
+  const items = await listCartItems(dbClient, cart.id);
   if (items.length === 0) return "Keranjang kosong.";
   const lines = items.map(
     (i) => `${i.product.flavor} x${i.qty} (${i.sweetnessLevel}) - Rp ${i.product.price * i.qty}`,
@@ -59,7 +61,29 @@ export function createTools(conversationId: string) {
     async execute({ flavor }) {
       const p = await findProduct(flavor);
       if (!p) return `Produk "${flavor}" tidak ditemukan.`;
-      return `${p.name} - Rp ${p.price}, stok ${p.stock} botol. Pilihan manis: ${p.sweetnessOptions.join(", ")}`;
+      return (
+        `${p.name} - Rp ${p.price}, stok ${p.stock} botol. ` +
+        `Pilihan manis: ${p.sweetnessOptions.join(", ")}.\n` +
+        "Cara pesan: sebutkan jumlah, tingkat manis, area, alamat, dan metode pembayaran. " +
+        "Pembayaran tersedia: COD, transfer bank, atau QRIS manual."
+      );
+    },
+  });
+
+  const listProducts = createTool({
+    name: "list_products",
+    description:
+      "List all available Soysu products with current price, stock, and sweetness options.",
+    input: z.object({}),
+    async execute() {
+      const rows = await db.select().from(products);
+      if (rows.length === 0) return "Belum ada produk tersedia.";
+      return rows
+        .map(
+          (p) =>
+            `${p.name} (${p.flavor}): Rp ${p.price}, stok ${p.stock}, manis: ${p.sweetnessOptions.join(", ")}`,
+        )
+        .join("\n");
     },
   });
 
@@ -115,6 +139,39 @@ export function createTools(conversationId: string) {
     },
   });
 
+  const checkoutPreview = createTool({
+    name: "checkout_preview",
+    description:
+      "Preview the current cart total, shipping, and payment status without creating an order or changing stock.",
+    input: z.object({
+      deliveryArea: z.string(),
+      paymentMethod: z.enum(["cod", "bank_transfer", "qris_manual"]),
+    }),
+    async execute({ deliveryArea, paymentMethod }) {
+      const area = DELIVERY_AREAS.find((item) => item.toLowerCase() === deliveryArea.toLowerCase());
+      if (!area) return `Area tidak didukung. Area tersedia: ${DELIVERY_AREAS.join(", ")}.`;
+      const conv = await ensure();
+      const cart = await getCart(db, conv.id);
+      const items = await listCartItems(db, cart.id);
+      if (items.length === 0) return "Keranjang kosong.";
+      const subtotal = items.reduce((sum, item) => sum + item.product.price * item.qty, 0);
+      const total = subtotal + SHIPPING_COST;
+      const lines = items.map(
+        (item) =>
+          `- ${item.product.name} x${item.qty} (${item.sweetnessLevel}): Rp ${item.product.price * item.qty}`,
+      );
+      return [
+        "Ringkasan pesanan:",
+        ...lines,
+        `Subtotal: Rp ${subtotal}`,
+        `Ongkir ${area}: Rp ${SHIPPING_COST}`,
+        `Total: Rp ${total}`,
+        `Pembayaran: ${paymentMethod}`,
+        "Ini masih preview. Belum ada order dan stok belum berubah.",
+      ].join("\n");
+    },
+  });
+
   const checkoutTool = createTool({
     name: "checkout",
     description: "Confirm and place the order. Use ONLY after the customer explicitly confirms.",
@@ -124,11 +181,14 @@ export function createTools(conversationId: string) {
       deliveryAddress: z.string(),
     }),
     async execute({ paymentMethod, deliveryArea, deliveryAddress }) {
+      const area = DELIVERY_AREAS.find((item) => item.toLowerCase() === deliveryArea.toLowerCase());
+      if (!area) return `Area tidak didukung. Area tersedia: ${DELIVERY_AREAS.join(", ")}.`;
+      if (!deliveryAddress.trim()) return "Alamat pengiriman wajib diisi sebelum checkout.";
       const conv = await ensure();
       const order = await checkout(db, {
         conversationId: conv.id,
         paymentMethod,
-        deliveryArea,
+        deliveryArea: area,
         deliveryAddress,
       });
       let message = `Order ${order.id} dibuat!\nStatus: ${order.status}\nTotal: Rp ${order.total}`;
@@ -179,8 +239,10 @@ export function createTools(conversationId: string) {
   return [
     ragSearch,
     checkStock,
+    listProducts,
     cartManager,
     shippingCalculator,
+    checkoutPreview,
     checkoutTool,
     attachProofTool,
     getReceipt,
