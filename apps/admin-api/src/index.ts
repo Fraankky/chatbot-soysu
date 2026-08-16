@@ -1,12 +1,13 @@
 import "dotenv/config";
 
+import { randomUUID } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 
-import { createDb } from "@soysu/database";
+import { createDb, createRedis, getWhatsAppConnection } from "@soysu/database";
 import {
   assignHandover,
   confirmCodOrder,
@@ -30,6 +31,8 @@ import { kbDocuments, products } from "@soysu/database/schema";
 import type { OrderStatus } from "@soysu/shared";
 
 const db = createDb();
+const redis = createRedis();
+const playgroundResponses = createRedis();
 const app = new Hono();
 
 app.use("/api/*", cors());
@@ -42,6 +45,55 @@ app.use("/api/*", async (c, next) => {
 });
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+const WHATSAPP_ID = "default";
+const whatsappQrKey = `whatsapp:qr:${WHATSAPP_ID}`;
+const whatsappCommandKey = `whatsapp:command:${WHATSAPP_ID}`;
+const playgroundRequestKey = "soysu:playground:requests";
+
+const playgroundSchema = z.object({
+  conversationId: z.string().min(1).max(120),
+  text: z.string().trim().min(1).max(2000),
+});
+
+app.get("/api/whatsapp/status", async (c) => {
+  const status = await getWhatsAppConnection(db, WHATSAPP_ID);
+  const qr = await redis.get(whatsappQrKey);
+  const effectiveStatus =
+    qr && status?.status !== "connected" ? "qr_ready" : (status?.status ?? "not_paired");
+  return c.json({
+    status: effectiveStatus,
+    phoneNumber: status?.phoneNumber ?? null,
+    deviceName: status?.deviceName ?? null,
+    qr: effectiveStatus === "qr_ready" ? qr : null,
+    lastError: status?.lastError ?? null,
+    updatedAt: status?.updatedAt ?? null,
+  });
+});
+
+app.get("/api/whatsapp/qr", async (c) => c.json({ qr: await redis.get(whatsappQrKey) }));
+app.post("/api/whatsapp/connect", async (c) => {
+  await redis.lpush(whatsappCommandKey, "connect");
+  return c.json({ ok: true });
+});
+app.post("/api/whatsapp/unpair", async (c) => {
+  await redis.lpush(whatsappCommandKey, "unpair");
+  return c.json({ ok: true });
+});
+
+app.post("/api/playground/chat", async (c) => {
+  const parsed = playgroundSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+  const requestId = randomUUID();
+  const responseKey = `soysu:playground:response:${requestId}`;
+  await redis.lpush(playgroundRequestKey, JSON.stringify({ requestId, ...parsed.data }));
+  const response = await playgroundResponses.brpop(responseKey, 30);
+  if (!response) return c.json({ error: "Bot response timeout" }, 504);
+  const body = JSON.parse(response[1]) as { ok: boolean; text?: string; error?: string };
+  return body.ok
+    ? c.json({ text: body.text ?? "" })
+    : c.json({ error: body.error ?? "Bot error" }, 500);
+});
 
 app.get("/api/dashboard/summary", async (c) => c.json(await dashboardSummary(db)));
 
@@ -193,6 +245,9 @@ app.get("/api/analytics/knowledge", async (c) => {
 });
 
 const port = Number(process.env.PORT ?? 8787);
+
+await redis.connect();
+await playgroundResponses.connect();
 
 setInterval(() => {
   void expireDuePayments(db).catch((err) => console.error("expire check failed:", err));
