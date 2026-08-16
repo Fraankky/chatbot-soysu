@@ -36,7 +36,9 @@ export class Debouncer {
       conversationId,
       setTimeout(() => {
         this.timers.delete(conversationId);
-        void this.process(conversationId);
+        void this.process(conversationId).catch((error) => {
+          console.error("debounced message failed", error);
+        });
       }, WINDOW_MS),
     );
   }
