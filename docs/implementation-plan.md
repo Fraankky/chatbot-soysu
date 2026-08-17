@@ -1,605 +1,382 @@
-# Master Implementation Plan — soysu.id Agentic RAG WhatsApp Bot
+# Master Implementation Plan — Multi-Merchant WhatsApp Commerce Platform
 
 Status: Living document. Sumber kebenaran eksekusi; sinkron dengan `docs/context.md` (PRD) dan `docs/context-arch.md` (arsitektur).
 
-Revisi arah pairing WhatsApp, dual-channel gateway, memory, dan orchestration ada di [`docs/revision-plan.md`](./revision-plan.md).
+Revisi arah produk dan migrasi WhatsApp dari Baileys ke BSP resmi ada di [`docs/revision-plan.md`](./revision-plan.md).
 
-Dokumen ini memuat rencana eksekusi lengkap: keputusan MVP, arsitektur, fase implementasi, kontrak, analytics dashboard, notifikasi, dan desain pembayaran.
+Dokumen ini memuat rencana productization lengkap: keputusan, fase, kontrak, data model, desain payment, delivery, inbox, dan acceptance criteria.
 
 ---
 
 ## 1. Ruang Lingkup & Tujuan
 
-Membangun **Agentic RAG Customer Service & Automated Sales Bot** untuk `soysu.id`:
+Membangun **platform commerce multi-merchant di WhatsApp**:
 
-- Bot WhatsApp (Baileys) + Anvia agent dengan RAG dan transactional tools.
-- Admin dashboard untuk monitoring, order processing, stok, knowledge base, dan human handover.
-- Pembayaran MVP: **COD + transfer bank / QRIS manual** (tanpa payment gateway).
+- Satu codebase, satu deployment awal, banyak tenant. Soysu = merchant pertama / pilot.
+- WhatsApp production memakai **satu BSP resmi untuk pilot**. Baileys hanya untuk development/transisi.
+- AI agent (Anvia) + RAG + transactional tools per tenant.
+- Merchant workspace untuk monitoring, order, stok, knowledge base, inbox, dan handover.
+- Pembayaran MVP: **QRIS manual + COD** (tanpa payment gateway).
+- Delivery MVP: order handoff ke merchant; merchant mengatur GoSend/kurir di luar flow WhatsApp platform.
+- Target komersial awal: layanan terjangkau untuk 4–8 UMKM, dengan setup dibantu dan workflow yang dapat dikustomisasi.
 
 ---
 
-## 2. Keputusan yang Dikunci (MVP)
+## 2. Keputusan yang Dikunci
 
-| Area             | Keputusan                           | Alasan                                                             |
-| ---------------- | ----------------------------------- | ------------------------------------------------------------------ |
-| Channel          | WhatsApp dahulu (Baileys)           | Telegram ditunda sampai vertical slice selesai                     |
-| Admin FE         | Vite + React + TS                   | Sudah ada, cukup untuk SPA dashboard; Next.js hanya jika SSR wajib |
-| Admin BE         | Hono                                | Ringan, TS-first                                                   |
-| ORM              | Drizzle                             | SQL-first, pgvector-friendly                                       |
-| LLM              | OpenAI via Anvia (provider pertama) | Multi-provider fallback setelah baseline stabil                    |
-| Payment MVP      | COD + bank transfer/QRIS manual     | Tanpa gateway; verifikasi admin                                    |
-| Payment phase 2  | Hosted payment link + webhook       | Xendit / Midtrans                                                  |
-| Store RAG        | PostgreSQL + pgvector               | Migration target dari in-memory                                    |
-| Debounce         | Redis sliding window 5 dtk          | Solusi P95 di bawah                                                |
-| Notifikasi order | DB `notifications` + polling → SSE  | Tidak hilang saat admin offline                                    |
-
-### Resolusi kontradiksi debounce vs P95
-
-PRD lama: "P95 < 4 dtk termasuk buffer debounce 5 dtk" — mustahil jika bot selalu menunggu 5 dtk.
-
-Keputusan: **kirim acknowledgement instan + proses burst asynchronous.**
-
-- Pesan pertama memicu balasan singkat ("Oke Kak, sebentar ya~") tanpa menunggu debounce penuh.
-- Burst dikumpulkan di Redis selama 5 dtk, lalu diproses menjadi satu agent run.
-- P95 diukur pada **waktu agent run setelah debounce**, bukan termasuk window debounce.
-
-### Perbaikan wajib sebelum build (foundation)
-
-`pnpm-workspace.yaml` saat ini invalid:
-
-```yaml
-allowBuilds:
-  esbuild: set this to true or false
-```
-
-Harus diganti dengan boolean eksplisit atau pakai `onlyBuiltDependencies` yang sudah benar.
+| Area                 | Keputusan                                          | Alasan                                              |
+| -------------------- | -------------------------------------------------- | --------------------------------------------------- |
+| Model produk         | SaaS multi-merchant, satu codebase                 | Merchant baru di-onboard, bukan dibuatkan aplikasi  |
+| Pilot tenant         | Soysu                                              | Validasi flow + onboarding sebelum merchant lain    |
+| Channel production   | BSP resmi (dipilih untuk pilot)                     | Mengurangi beban onboarding/support Meta            |
+| Channel dev          | Baileys (dev-only)                                 | Local testing, tanpa SLA production                 |
+| Ownership WABA       | Merchant-owned WABA                                | Aset & nomor milik merchant; onboarding terpandu    |
+| Payment MVP          | QRIS manual + COD                                  | Tanpa gateway; verifikasi admin dari mutasi         |
+| Payment gateway      | Fase berikutnya (Xendit/Midtrans/DOKU)             | Webhook idempotent + signature                      |
+| Provider-agnostic    | Boundary stabil via domain model, bukan abstraction prematur | Adapter hanya saat provider kedua dibutuhkan |
+| Idempotency          | DB unique constraint + transaction                 | Bukan framework generik                             |
+| Outbound messaging   | Outbox queue + delivery status                     | Anti duplikat kirim, status terlihat                |
+| Inbox                | Multi-agent human CS + bot pause/resume            | CS menangani kasus ambigu/bulk/komplain              |
+| Delivery MVP         | Handoff ke merchant                                | GoSend/kurir di luar flow platform                 |
+| Pricing              | Setup fee + monthly platform + usage/pass-through  | Terjangkau untuk UMKM; biaya provider transparan    |
+| Customization        | Konfigurasi, workflow, dan custom code             | Scope dan biaya disepakati per merchant             |
+| Operating hours      | Order aktif pada jam kerja tenant                  | Di luar jam kerja: FAQ/draft, tidak create sale     |
+| Store RAG            | PostgreSQL + pgvector (tenant-aware)               | Isolasi knowledge per merchant                      |
+| Debounce             | Redis sliding window 5 dtk                         | Gabungkan burst message                             |
+| Notifikasi           | DB `notifications` + polling → SSE                 | Tidak hilang saat admin offline                     |
 
 ---
 
 ## 3. Arsitektur Target
 
 ```
-                      ┌────────────────────────────┐
-                      │      WhatsApp (Baileys)    │
-                      └─────────────┬──────────────┘
-                                    │ raw messages
-                                    ▼
-                      ┌────────────────────────────┐
-                      │  Gateway (apps/bot)        │
-                      │  normalize + dedup         │
-                      │  + idempotency             │
-                      └─────────────┬──────────────┘
-                                    ▼
-                      ┌────────────────────────────┐
-                      │  Redis Debounce Buffer     │
-                      │  (5s sliding window / conv)│
-                      └─────────────┬──────────────┘
-                                    ▼
-                      ┌────────────────────────────┐
-                      │  Anvia Agent Orchestration │
-                      │  ragSearch | checkStock    │
-                      │  cartManager | checkout    │
-                      │  shippingCalculator        │
-                      └───────┬──────────┬─────────┘
-                              │          │
-                              ▼          ▼
-              ┌──────────────────┐  ┌──────────────────┐
-              │  PostgreSQL      │  │  Outbound Queue  │
-              │  + pgvector      │  │  typing + delay  │
-              │  + Redis         │  └────────┬─────────┘
-              └──────────────────┘           ▼
-                                   kirim balasan + receipt
-
-  Admin API (apps/admin-api) ──► PostgreSQL ──► Notifikasi ──► Admin Web
+ WhatsApp BSP (pilot) — webhook
+                ↓
+ Messaging Gateway (apps/gateway-api)
+  verify signature → resolve channel_account → resolve tenant
+  → dedup (unique message id) → normalize → persist
+                ↓
+ Redis Debounce Buffer (5s / conversation)
+                ↓
+ Agent Worker (apps/bot) — Anvia + tools per tenant
+   ragSearch | checkStock | cartManager | shippingCalculator | checkout
+                ↓
+ Commerce Services (packages/commerce + payments + fulfillment)
+                ↓
+ Outbox Outbound → provider → delivery status
+                ↓
+ Merchant Workspace (apps/admin-api + admin-web)
+  Inbox | Orders | Payments | Delivery | Products | Knowledge
 ```
 
-### Struktur monorepo (target setelah fase berjalan)
-
-```text
-soysu/
-├── apps/
-│   ├── bot/                      # Agent runtime + gateway
-│   │   └── src/
-│   │       ├── gateway/          # baileys.ts, normalize.ts, debounce.ts, outbound.ts
-│   │       ├── anvia/            # runtime.ts, state.ts, tools/*, nodes/*
-│   │       ├── llm/              # (phase 10) router + providers
-│   │       ├── rag.ts
-│   │       └── index.ts
-│   ├── admin-api/                # Hono REST + webhook payment (phase 2)
-│   └── admin-web/                # Vite + React dashboard
-├── packages/
-│   ├── database/                 # Drizzle schema, migrations, repositories, services
-│   ├── rag/                      # chunker, embedder, pgvector retriever
-│   └── shared/                   # types + constants (OrderStatus, PaymentMethod, …)
-├── docker-compose.yml            # postgres+pgvector, redis
-├── docs/                         # PRD, arsitektur, plan ini
-├── AGENTS.md
-└── moon.yml
-```
+Struktur monorepo lengkap ada di `docs/context-arch.md`.
 
 ---
 
 ## 4. Kontrak (Shared Types)
 
-Didefinisikan di `packages/shared` sejak awal.
-
 ```ts
 interface InboundMessage {
-  channel: "whatsapp" | "telegram";
+  tenantId: string;
+  channelAccountId: string;
   externalMessageId: string; // id unik dari provider
-  conversationId: string; // "wa:628xxx@s.whatsapp.net"
-  senderId: string;
+  conversationExternalId: string;
+  senderExternalId: string;
   text: string;
-  mediaType?: "image" | "document" | null; // untuk bukti transfer
+  mediaType?: "image" | "document" | null;
   receivedAt: Date;
 }
 
 interface OutboundMessage {
+  tenantId: string;
+  channelAccountId: string;
   conversationId: string;
-  text: string;
-  mediaBuffer?: Buffer; // receipt / gambar
+  text?: string;
+  mediaBuffer?: Buffer;
   mediaMime?: string;
+  templateName?: string;
+  idempotencyKey: string;
 }
 
 interface ChannelAdapter {
-  connect(): Promise<void>;
-  send(message: OutboundMessage): Promise<void>;
-  setTyping(conversationId: string, typing: boolean): Promise<void>;
-  onMessage(handler: (msg: InboundMessage) => void): void;
+  receiveEvent(event: unknown): Promise<void>;
+  sendText(message: OutboundMessage): Promise<SendResult>;
+  sendMedia(message: OutboundMediaMessage): Promise<SendResult>;
+  sendTemplate(message: TemplateMessage): Promise<SendResult>;
 }
 ```
 
 ```ts
 type OrderStatus =
   | "draft"
-  | "pending_confirmation" // menunggu konfirmasi admin/customer
+  | "pending_confirmation"
+  | "pending_payment"
   | "processing"
-  | "ready_to_deliver"
-  | "out_for_delivery"
+  | "handed_over"
   | "completed"
   | "cancelled";
 
 type PaymentStatus =
   | "not_required" // COD
-  | "pending" // menunggu transfer / QRIS
+  | "pending"
+  | "proof_submitted"
   | "paid"
-  | "failed"
+  | "rejected"
   | "expired";
 
-type PaymentMethod = "cod" | "bank_transfer" | "qris_manual";
+type PaymentMethod = "cod" | "qris_manual";
 
 type HandoverStatus = "open" | "assigned" | "waiting_customer" | "resolved";
+
+type DeliveryStatus =
+  | "pending_handoff" | "handed_to_merchant" | "completed" | "failed";
 ```
 
-Order menyimpan **snapshot harga** (unit_price, total) agar perubahan harga produk tidak mengubah order lama.
+Order menyimpan **snapshot harga** (unit_price, total). `tenant_id` wajib ada di semua type data bisnis.
 
 ---
 
 ## 5. Fase Implementasi
 
-### Phase 0 — Foundation & Kontrak
+### Phase 0 — Validasi Produk & Provider
 
-- [ ] Perbaiki `pnpm-workspace.yaml` (allowBuilds invalid).
-- [ ] Tambah `packages/database` (Drizzle + client).
-- [ ] Tambah `docker-compose.yml` (postgres:16-pgvector, redis:7-alpine).
-- [ ] Definisikan shared types (kontrak di atas).
-- [ ] `.env.example` terpusat + validasi env wajib saat boot.
-- [ ] `pnpm moon run :format :lint :typecheck` hijau.
+- [ ] Pilih satu BSP resmi untuk pilot (harga, fitur, dukungan existing number, template, Indonesia).
+- [ ] Validasi existing-number migration/coexistence dengan nomor Soysu.
+- [ ] Tentukan ownership WABA (rekomendasi: merchant-owned).
+- [ ] Tentukan siapa menanggung Meta billing (passthrough ke merchant).
+- [ ] Validasi template message & conversation window.
+- [ ] Tetapkan SLA internal dan recovery process.
+- [ ] Terapkan Meta/BSP fee sebagai pass-through transparan ke merchant.
+- [ ] Tetapkan harga UMKM: setup fee, monthly fee, included usage, overage, dan support.
+- [ ] Pilot merchant: Soysu di Semarang Atas.
 
-### Phase 1 — Persistent Database Core
+### Phase 1 — Fondasi Multi-Tenant
 
-Schema Drizzle minimum:
+- [ ] `tenants`, `tenant_users`, roles, merchant settings.
+- [ ] Tenant-scoped database services (semua service menerima tenant context).
+- [ ] Hapus asumsi ID `default` dan single `ADMIN_TOKEN`.
+- [ ] RBAC: `admin`, `operator`, `viewer`.
+- [ ] Tenant-scoped RAG, notifications, audit log.
+- [ ] Idempotency constraint database.
 
-- `customers`, `conversations`, `messages`
-- `wa_auth_sessions`
-- `products`, `product_prices`, `stock_movements`, `stock_reservations`
-- `carts`, `cart_items`
-- `orders`, `order_items`, `payments`
-- `notifications`
-- `handovers`, `handover_events`
-- `kb_documents`, `kb_document_versions`, `kb_parents`, `kb_child_chunks`, `kb_ingestion_jobs`
+### Phase 2 — Channel Account & Onboarding
 
-Aturan:
+- [ ] `channel_accounts` (provider, external_account_id, phone_number, status).
+- [ ] Onboarding state machine: pending → verification_required → migration_required → provisioning → connected → failed → suspended.
+- [ ] Flow verifikasi ownership nomor existing.
+- [ ] Flow migrasi penuh / coexistence.
+- [ ] Webhook registration + signature verification.
+- [ ] Disconnect/reconnect handling per channel account.
+- [ ] Baileys hanya adapter dev.
+- [ ] Platform operator dashboard untuk onboarding, health, support, dan status channel.
 
-- Unique `messages(provider_message_id)` → idempotency.
-- Unique `conversations(channel, external_id)`.
-- Stok dikurangi dalam transaksi dengan row lock (reservation).
-- Semua perubahan harga/stok masuk `stock_movements` / audit.
-- Migration repeatable + rollback strategy tercatat.
+### Phase 3 — Messaging & Inbox
 
-### Phase 2 — Shared Repository & Service Layer
+- [ ] Inbound webhook normalization + dedup.
+- [ ] Outbox outbound + delivery status (queued/sending/sent/delivered/read/failed).
+- [ ] Conversation assignment.
+- [ ] Human outbound message (role `human`).
+- [ ] Bot pause/resume saat handover.
+- [ ] Internal notes + SLA + handover events.
+- [ ] Business hours, timezone, holiday, cutoff order, dan after-hours message per tenant.
+- [ ] Di luar jam kerja: FAQ/draft tetap aktif; checkout/order creation ditolak dengan pesan menunggu jam kerja.
 
-```text
-packages/database/src/
-├── client.ts
-├── redis.ts
-├── repositories/*          # products, stock, carts, orders, conversations, knowledge, notifications
-├── services/
-│   ├── checkout.ts         # transaksi order + reservation
-│   ├── stock.ts            # reserve/release/adjust dengan lock
-│   ├── payment.ts          # MVP: mark paid, expire, bukti transfer
-│   └── handover.ts
-└── index.ts
-```
+### Phase 4 — Catalog, Cart, Checkout
 
-- Tool bot dan admin API memakai **service yang sama**. Tidak boleh ada implementasi stok kedua.
-- `checkStock` → baca repository, bukan `SEED_PRODUCTS`.
+- [ ] Tenant-specific catalog (product, variant, harga, stok).
+- [ ] Cart unique per tenant + conversation; expiry; validasi qty positif.
+- [ ] Checkout preview + explicit confirmation.
+- [ ] Order creation idempotent (`checkout_request_id` unique).
+- [ ] Stock reserve dalam transaction (row lock); release saat expired/cancelled.
+- [ ] Snapshot harga order.
 
-### Phase 3 — Durable RAG
+### Phase 5 — Payment: QRIS Manual & COD
 
-Perbaikan terhadap RAG in-memory saat ini:
-
-- `parentId` harus menunjuk parent document sungguhan (sekarang hanya id acak per grup).
-- Simpan dokumen parent di `kb_parents`.
-- Simpan `embedding_model` + `embedding_dimensions` per version.
-- Ganti token overlap dengan sparse search berbasis Postgres (pg_trgm) atau normalisasi token sendiri — **bukan** `to_tsvector('english', ...)` (tidak cocok untuk bahasa Indonesia).
-- Ingestion di background; version aktif hanya diaktifkan setelah indexing sukses.
-- Retrieval: dense + sparse → weighted merge (`0.7 * dense + 0.3 * sparse`) → parent expansion → confidence threshold → konteks untuk agent.
-- Embedding dimulai **lazy** (saat ingest/retrieve), bukan saat bot boot, supaya startup bot tidak menunggu API call.
-
-### Phase 4 — WhatsApp Gateway
-
-`apps/bot/src/gateway/`:
-
-- `baileys.ts`: Baileys socket, QR/pairing, reconnect backoff, graceful shutdown.
-- Session persistence ke PostgreSQL (`wa_auth_sessions`).
-- `normalize.ts`: map event Baileys → `InboundMessage`.
-- Filter: abaikan pesan sendiri, group/broadcast sesuai aturan bisnis.
-- `idempotency.ts`: dedup berdasarkan `provider_message_id`.
-
-### Phase 5 — Redis Debounce & Processing
-
-Flow:
+QRIS manual:
 
 ```text
-inbound → persist ke Postgres → append Redis buffer → reset timer 5s
-  → claim buffer atomic → create agent run → process combined prompt
+checkout → tampilkan QRIS merchant + total → pending_payment
+→ customer kirim bukti → proof_submitted
+→ admin cocokkan mutasi → paid | rejected
 ```
 
-Redis key:
+COD:
 
 ```text
-conversation:{id}:debounce
-conversation:{id}:processing-lock
+checkout → konfirmasi merchant/admin → processing
+→ handoff ke merchant → delivery di luar platform
 ```
 
-Wajib: TTL, max message count, max payload, atomic claim, lock single-flight, recovery saat worker mati, idempotency key, dead-letter.
+- [ ] `payment_configs` per tenant (QRIS image/payload, bank, instruksi, active).
+- [ ] `payments` state machine + `verified_by`/`verified_at`.
+- [ ] Snapshot QRIS per order.
+- [ ] Rejection + alasan.
+- [ ] Expiry (mis. 30 menit) → release stok + notifikasi.
+- [ ] Catat metode COD dan delivery handoff; collection/settlement merchant berada di luar MVP.
 
-### Phase 6 — Agent Runtime & Transactional Tools
+### Phase 6 — Delivery Handoff
 
-Tools Anvia (`createTool` + zod):
+- [ ] Delivery config per tenant (zona, ongkir, alamat).
+- [ ] Delivery handoff status ke merchant.
+- [ ] Merchant dapat mencatat reference GoSend/kurir secara manual.
+- [ ] Tunda dispatch, tracking otomatis, driver app, dan COD settlement.
 
-- `ragSearch` — baca knowledge base, kembalikan konteks + score, jangan jawab langsung.
-- `checkStock` — baca stock service, **tanpa side effect**.
-- `cartManager` — add/remove/update qty/set sweetness, validasi produk & stok.
-- `shippingCalculator` — validasi area (Sleman/Bantul/Kota Yogyakarta), estimasi ongkir.
-- `checkout` — validasi cart, reserve stock, buat order, simpan snapshot harga, **hanya setelah konfirmasi eksplisit**.
-
-Side-effect policy:
-
-- Read-only tools boleh retry terbatas.
-- Tool transactional tidak boleh di-retry buta; semua side effect idempotent (idempotency key).
-
-### Phase 7 — Checkout, Payment MVP & Receipt
-
-#### Alur order + pembayaran (MVP)
-
-```text
-Cart ready
-  → shipping validated
-  → order summary ditampilkan
-  → customer pilih metode: COD | bank_transfer | qris_manual
-  → konfirmasi eksplisit customer
-```
-
-**COD:**
-
-```text
-order_status = pending_confirmation, payment_status = not_required
-  → admin konfirmasi di Orders > New
-  → processing → out_for_delivery → completed
-```
-
-**bank_transfer / qris_manual:**
-
-```text
-order_status = pending_confirmation, payment_status = pending
-  → bot kirim instruksi pembayaran (nomor rekening / QRIS statis)
-  → customer upload bukti (image via WA)
-  → bukti disimpan (payments.proof_message_id, file di storage)
-  → admin verifikasi di Payments queue → "Mark as Paid"
-  → payment_status = paid, order_status = processing
-  → expired (mis. 30 menit) → payment_status = expired → release stock reservation
-```
-
-#### Stock reservation
-
-- Saat checkout: reserve stok dalam transaksi dengan row lock.
-- Order masih `pending`: stok **direservasi**, bukan dikurangi permanen.
-- Pembayaran paid / order diproses → reservation dikonversi ke pengurangan stok.
-- Order expired/cancelled → release reservation.
-
-#### Receipt
-
-- Mulai dari HTML/PDF deterministik (simpan untuk cetak ulang), lalu kirim sebagai file.
-- Isi: logo Soysu, order id, tanggal, item + sweetness, ongkir, total, metode bayar, status pembayaran.
-
-#### Notifikasi order
-
-Event → insert `notifications` → dashboard menampilkan badge/toast:
-
-- order baru (PENDING_CONFIRMATION / PENDING_PAYMENT)
-- customer upload bukti pembayaran
-- payment paid / expired
-- stok kritis
-- handover request
-- order butuh konfirmasi admin
-
-### Phase 8 — Admin API & Security
-
-Endpoint:
-
-```text
-Dashboard      GET  /api/dashboard/summary
-               GET  /api/analytics/conversations?from&to   (memori)
-               GET  /api/analytics/knowledge?from&to       (knowledge)
-Products       GET/POST /api/products
-               PATCH/DELETE /api/products/:id
-Stock          GET  /api/stock
-               POST /api/stock/adjustments
-Orders         GET  /api/orders
-               GET  /api/orders/:id
-               PATCH /api/orders/:id/status
-               POST /api/orders/:id/receipt
-Payments       GET  /api/payments
-               POST /api/payments/:id/mark-paid
-Notifications  GET  /api/notifications
-               POST /api/notifications/:id/read
-Knowledge      GET/POST /api/knowledge
-               PATCH/DELETE /api/knowledge/:id
-               POST /api/knowledge/:id/reindex
-Handover       GET  /api/handovers
-               POST /api/handovers/:id/assign
-               POST /api/handovers/:id/resolve
-```
-
-Security:
-
-- Auth sebelum endpoint mutation (session/JWT).
-- RBAC: `admin`, `operator`, `viewer`.
-- Validasi semua body/query dengan zod.
-- Audit log untuk: price, stock adjustment, order status, knowledge, handover, payment verify.
-- CORS tidak wildcard di production; request ID + structured logging.
-
-### Phase 9 — Admin UI (Vite + React)
+### Phase 7 — Merchant Workspace
 
 Menu:
 
 ```text
-Dashboard
-├── Overview          (angka kunci + ringkasan)
-├── Orders            (queue proses + filter status)
-├── Payments          (verifikasi bukti transfer/QRIS)
-├── Notifications     (badge + daftar)
-├── Human Handover
-├── Products & Stock
-├── Knowledge Base / RAG
-├── Conversations / Customers
-└── Settings
+Overview | Inbox | Orders | Payments | Products | Stock
+Delivery | Customers | Knowledge Base | WhatsApp Setup
+Team & Roles | Merchant Settings | Audit Log
 ```
 
-UI states wajib: loading, empty, error, retry, permission denied; konfirmasi dialog untuk mutasi.
+- [ ] Inbox multi-agent (assignment, notes, outbound).
+- [ ] Order queue + payment verification UI.
+- [ ] WhatsApp Setup onboarding wizard.
+- [ ] UI states wajib: loading, empty, error, retry, permission denied; konfirmasi dialog untuk mutasi.
 
-### Phase 10 — Multi-provider LLM Router (setelah baseline stabil)
+### Phase 8 — Production Hardening
 
-Urutan provider:
+- [ ] Rate limit (inbound, outbound, admin).
+- [ ] Queue backpressure + retry policy + dead-letter queue.
+- [ ] Provider outage handling + runbook.
+- [ ] Health checks + graceful shutdown.
+- [ ] Secret rotation + credential encryption.
+- [ ] Backup + restore test.
+- [ ] Tenant isolation test.
+- [ ] Audit review + security testing.
+- [ ] Structured logging + request/message correlation ID.
 
-```text
-Primary:   OpenAI (Anvia)
-Secondary: Gemini (setelah tool calling tervalidasi)
-Tertiary:  OpenRouter (setelah capability mapping)
-Optional:  GLM/ZAI (setelah API contract tervalidasi)
-```
+### Phase 9 — Pilot & Commercial Launch
 
-Aturan:
-
-- Round-robin hanya antar API key provider yang sama; cooldown setelah 429.
-- Fallback inter-provider hanya untuk: timeout, 429, 5xx, unavailable.
-- Jangan fallback pada: invalid key, invalid request, schema tool tak kompatibel, atau request yang sudah punya side effect.
-- Circuit breaker: closed → open → half-open.
-- Capability matrix per provider: tool calling, structured output, context limit, streaming, error format.
-
-### Phase 11 — Human Handover
-
-State machine: `open → assigned → waiting_customer → resolved`.
-
-- Bot pause saat handover aktif (`bot_paused = true`).
-- Trigger: low retrieval confidence, frustrasi, bulk order, tool failure berulang, permintaan eksplisit.
-- Ownership dicatat di event log; bot resume setelah resolved.
-
-### Phase 12 — Testing, Evaluation & Observability
-
-Unit test: chunker, scoring, stock reservation, cart, checkout, payment expiry, provider error classification, debounce.
-
-Integration: migration, pgvector retrieval, Redis debounce, admin API + DB, bot tool + DB, Baileys normalize.
-
-Scenario: FAQ, cek stok, ganti sweetness, konfirmasi order, burst message, request human, provider 429/timeout, duplicate message, Redis restart, DB down, payment expired, bukti transfer diverifikasi.
-
-RAG eval: dataset (question, expected_document, expected_facts, must_not_claim); metric recall@k, faithfulness, no-answer accuracy.
-
-Observability: inbound latency, debounce duration, agent run duration, token usage, tool duration, retrieval score, fallback count, handover count, order conversion, duplicate count, provider error rate.
-
-### Phase 13 — Docker & Production Readiness
-
-`docker-compose.yml`: postgres, redis, admin-api, admin-web, bot (worker ingestion terpisah bila embedding berat).
-
-Concern: backup Postgres, persistence Redis, secret rotation, health check, graceful shutdown, migration execution, log retention, resource limits, WhatsApp session backup, runbook outage provider.
+- [ ] Pilot Soysu (nomor existing → BSP).
+- [ ] 4–8 merchant UMKM beta.
+- [ ] Onboarding playbook.
+- [ ] Merchant support process.
+- [ ] Usage/cost monitoring per tenant.
+- [ ] Model billing (biaya tetap + tarif pesan Meta).
+- [ ] Usage/cost tracking per tenant (LLM, message, storage, BSP).
+- [ ] Platform operator dashboard: tenant, onboarding, provider health, support access, usage, billing.
+- [ ] SLA + incident runbook.
+- [ ] Migration rollback procedure.
 
 ---
 
-## 6. Analytics Dashboard (Graph)
+## 6. Data Model (Referensi)
 
-### Prinsip
-
-- **Graph dinamis hanya untuk dua domain: memori & knowledge.** Sisanya cukup kartu angka / tabel.
-- Data disajikan dari endpoint agregasi Admin API (query Postgres, bukan realtime streaming).
-
-### Memori (conversations & messages) — dynamic
-
-- Inbound messages per hari (7/30 hari).
-- Active conversations per hari.
-- Bot vs human messages per hari.
-- Rata-rata durasi agent run / response time.
-- Handover rate per hari.
-
-Data model (minimal):
+### Tenant & Channel
 
 ```text
-conversations (id, channel, external_id, status, created_at, last_message_at)
-messages     (id, conversation_id, role[user|bot|human], text, created_at)
+tenants (id, name, slug, status, settings jsonb)
+tenant_users (tenant_id, user_id, role, status)
+channel_accounts (id, tenant_id, channel, provider,
+  external_account_id, phone_number, status, credential_reference)
 ```
 
-Endpoint: `GET /api/analytics/conversations?from&to` → time-series agregasi.
-
-### Knowledge (RAG usage) — dynamic
-
-- Jumlah query retrieval per hari.
-- Top queries (grouping teks serupa).
-- Distribusi retrieval confidence / score.
-- No-answer rate (query tanpa konteks cukup).
-- Status knowledge base: jumlah dokumen per kategori, versi aktif, index pending/gagal.
-- Latency retrieval rata-rata.
-
-Data model (minimal):
+### Messaging
 
 ```text
-rag_events (id, conversation_id, query, top_score, no_answer, latency_ms, created_at)
-kb_documents (id, title, category, status, active_version_id)
-kb_ingestion_jobs (id, document_id, status, chunks_count, error, created_at)
+conversations (id, tenant_id, channel_account_id, customer_id, status)
+messages (id, tenant_id, conversation_id, role, direction,
+  provider_message_id unique per channel_account, text, media, status)
+outbound_messages (id, tenant_id, conversation_id, channel_account_id,
+  payload, idempotency_key, status)
 ```
 
-Endpoint: `GET /api/analytics/knowledge?from&to`.
+### Commerce & Payment
 
-### Statis/sederhana (bukan graph dinamis)
+```text
+products (+ tenant_id, variant, price, stock)
+carts / cart_items (unique per tenant + conversation, expiry)
+orders (tenant_id, conversation_id, status, payment_method,
+  payment_status, shipping, total, snapshot)
+order_items (snapshot nama, variant, qty, unit_price)
+payments (tenant_id, order_id, method, amount, status,
+  proof_message_id, proof_file_path, verified_by, verified_at, expired_at)
+payment_configs (tenant_id, method, display_name, qris_image/payload,
+  bank fields, instructions, active)
+```
 
-- Kartu angka: order hari ini, revenue, stok kritis, payment pending.
-- Tabel produk, order, payment queue.
+### Delivery Handoff
 
-### Notifikasi real-time
+```text
+delivery_handoffs (tenant_id, order_id, area, address, shipping_cost,
+  status, external_reference, notes)
+```
 
-- MVP: polling `GET /api/notifications` tiap 10 dtk.
-- Setelah stabil: SSE (`GET /api/notifications/stream`) untuk update instan tanpa WebSocket.
+### Platform Operations & AI Tracing
+
+```text
+platform_users (id, email, role, status)
+usage_events (tenant_id, type, quantity, cost_estimate, created_at)
+billing_records (tenant_id, period, platform_fee, usage_fee, provider_fee, status)
+ai_runs (tenant_id, conversation_id, model, prompt_reference, response,
+  tool_calls, retrieval_scores, latency_ms, input_tokens, output_tokens, error)
+```
+
+### RAG, Notification, Audit
+
+```text
+kb_documents / kb_versions / kb_chunks (+ tenant_id)
+notifications (+ tenant_id, type, order_id?, conversation_id?, is_read)
+audit_logs (tenant_id, actor, action, entity, data, created_at)
+```
 
 ---
 
-## 7. Desain Pembayaran (detail)
+## 7. Notifikasi (detail)
 
-### Keputusan
-
-- **MVP: COD + bank transfer/QRIS manual. Tanpa payment gateway.**
-- Payment gateway (hosted payment link + webhook) = fase berikutnya, opsional.
-
-### Tabel `payments`
+Tabel `notifications`:
 
 ```text
-id, order_id, method, amount,
-proof_message_id,        -- id pesan WA bukti transfer
-proof_file_path,         -- path media bukti (storage lokal/S3 nanti)
-status,                  -- pending | paid | failed | expired | not_required
-verified_by, verified_at,  -- admin yang menandai paid
-expired_at, created_at
-```
-
-### Alur verifikasi manual (admin)
-
-```text
-Customer upload bukti → payments.proof_message_id terisi
-  → notification "Bukti pembayaran masuk"
-  → admin buka Payments queue → lihat bukti
-  → verifikasi nominal via mutasi rekening (jangan percaya screenshot)
-  → "Mark as Paid" → payment_status=paid → order processing
-```
-
-Catatan keamanan:
-
-- Jangan mempercayai nominal dari screenshot; verifikasi dari dashboard merchant/mutasi.
-- Log `verified_by` + `verified_at` untuk audit.
-- Expiry tetap berjalan; bukti yang telat diproses sesuai kebijakan (manual oleh admin).
-
-### Expiry & stok
-
-```text
-PENDING_PAYMENT → (30 menit) → EXPIRED
-  → release stock reservation
-  → notifikasi customer + admin
-```
-
-### Payment gateway (fase berikutnya — catatan)
-
-- Pilihan kandidat: Xendit (payment link/invoice) atau Midtrans Snap.
-- Pola: backend buat invoice → customer dapat URL via WA → bayar → webhook → verifikasi signature → `paid`.
-- Tidak pernah menyimpan kartu/CVV; simpan hanya `provider_payment_id`, `checkout_url`, `raw_status`.
-- Webhook harus idempotent.
-
----
-
-## 8. Notifikasi (detail)
-
-Tabel:
-
-```text
-notifications
-- id
-- type            (new_order | payment_proof | payment_paid | payment_expired | stock_low | handover_request | order_action_needed | delivery_failed | indexing_finished)
-- order_id?
-- conversation_id?
-- title, message
-- is_read
-- created_at
+- id, tenant_id
+- type (new_order | payment_proof | payment_paid | payment_rejected |
+        payment_expired | stock_low | handover_request | order_action_needed |
+        delivery_failed | indexing_finished)
+- order_id?, conversation_id?
+- title, message, is_read, created_at
 ```
 
 Prioritas:
 
 ```text
 critical: payment_expired, stock_low, handover_request, delivery_failed
-high:     new_order, payment_proof, payment_paid
+high:     new_order, payment_proof, payment_paid, payment_rejected
 normal:   order status update, indexing_finished
 ```
 
----
-
-## 9. MVP Scope (yang dibangun pertama)
-
-1. [x] Perbaiki `pnpm-workspace.yaml` + tambah `packages/database`.
-2. [x] Docker Compose: PostgreSQL+pgvector, Redis.
-3. [x] Drizzle schema + migrations + repositories/services.
-4. [x] Migrasi `checkStock` dari seed ke DB; cart & order transaction.
-5. [x] RAG persistent (pgvector) + lazy embed.
-6. [x] Baileys gateway + Redis debounce + typing/outbound.
-7. [x] Anvia agent: `ragSearch`, `checkStock`, `cartManager`, `shippingCalculator`, `checkout`.
-8. [x] Payment MVP: COD + transfer/QRIS manual + verifikasi admin.
-9. [x] Admin API + UI: Overview, Orders, Payments, Notifications, Products/Stock, Knowledge.
-10. [x] Graph dinamis: memori & knowledge.
-11. [x] Basic human handover.
-12. [x] Unit/integration test utama.
-
-**Ditunda:** Telegram, GLM/ZAI, multi-provider fallback kompleks, reranker Cohere, receipt image, migrasi Next.js, payment gateway, analytics lanjutan.
+MVP memakai polling; SSE setelah stabil.
 
 ---
 
-## 10. Acceptance Criteria (checklist)
+## 8. Idempotency (detail)
 
-- [ ] `pnpm install` bersih tanpa config invalid.
-- [ ] `pnpm moon run :format :lint :typecheck` hijau.
-- [ ] Migration jalan dari DB kosong; rollback strategy tercatat.
-- [ ] Perubahan stok di admin langsung terlihat di tool bot (DB bersama).
-- [ ] Burst 10 pesan/3 dtk → satu agent run; duplicate event tidak menggandakan response.
+- Inbound message: `unique(channel_account_id, provider_message_id)` — dedup event webhook.
+- Order creation: `unique(tenant_id, conversation_id, checkout_request_id)` — cegah double order saat retry/duplicate konfirmasi.
+- Payment verification: hanya transisi dari `pending`/`proof_submitted` ke `paid` sekali.
+- Outbound send: `idempotency_key` — retry worker tidak mengirim dua kali.
+- Semua dalam satu database transaction.
+
+---
+
+## 9. Acceptance Criteria (checklist)
+
+- [ ] Merchant baru bisa di-onboard tanpa membuat aplikasi baru (via `tenants` + `channel_accounts`).
+- [ ] Data antar tenant terisolasi (service selalu memakai tenant context; tidak ada endpoint lintas tenant).
+- [ ] Nomor existing bisa dihubungkan lewat flow verifikasi + migration/coexistence resmi.
+- [ ] Webhook inbound terverifikasi signature; duplicate event tidak menggandakan message.
+- [ ] Outbound lewat outbox; status delivery terlihat; retry tidak mengirim duplikat.
+- [ ] Burst 10 pesan/3 dtk → satu agent run; response tidak terduplikasi.
 - [ ] Checkout hanya setelah konfirmasi eksplisit; duplicate request tidak membuat duplicate order.
-- [ ] COD: order masuk Orders queue + notifikasi; admin konfirmasi → processing.
-- [ ] Transfer/QRIS: bukti upload → Payments queue → Mark as Paid → paid + processing.
-- [ ] Expired payment melepas stock reservation + notifikasi.
-- [ ] Receipt deterministik, bisa dicetak ulang dari admin.
-- [ ] Graph memori & knowledge menampilkan data agregasi; notifikasi muncul via polling (→ SSE).
-- [ ] Handover: bot berhenti membalas saat handover aktif, resume setelah resolved.
-- [ ] Endpoint mutation admin tidak bisa diakses tanpa auth; semua body zod-validated; audit log terisi.
-- [ ] Recovery test: Postgres restart, Redis restart, bot restart, Baileys reconnect.
+- [ ] QRIS manual: bukti upload → queue verifikasi → mark paid/reject; tercatat verified_by/at.
+- [ ] COD: konfirmasi merchant → processing → handoff; delivery/collection berada di luar platform MVP.
+- [ ] Payment expired melepas reservasi stok + notifikasi.
+- [ ] Handover: bot berhenti membalas; human bisa kirim pesan keluar; resume setelah resolved.
+- [ ] Delivery handoff ke merchant tercatat; GoSend/kurir tidak perlu terintegrasi pada MVP.
+- [ ] Di luar jam kerja bot tidak membuat order aktif, tetapi memberi FAQ/draft dan pesan estimasi response.
+- [ ] AI trace tersedia untuk setiap run: model, context reference, tools, retrieval score, response, latency, token usage, error.
+- [ ] Platform operator dapat memantau 4–8 tenant tanpa mencampur akses tenant.
+- [ ] Stock & harga selalu dari database tenant (bukan RAG/tebakan).
+- [ ] Endpoint mutation admin butuh auth + RBAC; semua body zod-validated; audit log terisi.
+- [ ] Recovery test: Postgres restart, Redis restart, bot restart, provider disconnect.

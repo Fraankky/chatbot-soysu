@@ -1,559 +1,204 @@
-# Revision Plan: WhatsApp Pairing, Memory, and Agentic Gateway
+# Revision Plan: Productization & WhatsApp Migration
 
-Status: Proposed direction. Dokumen ini merevisi `docs/implementation-plan.md` berdasarkan kebutuhan hackathon dan alur pairing WhatsApp.
+Status: Living document. Merevisi arah dari produk single-merchant berbasis Baileys menjadi platform multi-merchant dengan WhatsApp BSP resmi.
 
-## 1. Arah Utama
+## 1. Direction Change
 
-Target MVP direvisi menjadi:
+Arah produk berubah dari **chatbot untuk satu brand (Soysu)** menjadi **platform commerce WhatsApp untuk banyak merchant**, dengan Soysu sebagai merchant pertama / pilot tenant.
 
-1. WhatsApp sebagai channel utama dengan pairing QR dari Admin Dashboard.
-2. Telegram memakai adapter yang sama setelah WhatsApp stabil.
-3. Redis untuk short-term session dan burst debounce.
-4. PostgreSQL untuk customer profile, cart archive, order, message, dan knowledge base.
-5. Anvia tetap menjadi agent framework utama.
-6. OpenAI menjadi provider pertama; multi-provider dibuat setelah flow dasar stabil.
-7. Pembayaran tetap COD + transfer/QRIS manual.
+Perubahan kunci:
 
-Jangan membangun dua agent framework. Google Agents CLI/ADK tetap opsional dan tidak dimasukkan ke runtime utama karena stack saat ini TypeScript + Anvia.
+1. Satu codebase multi-tenant; merchant baru di-onboard, bukan dibuatkan aplikasi baru.
+2. WhatsApp production memakai **satu BSP resmi untuk pilot**; Baileys hanya development.
+3. Nomor WhatsApp existing dihubungkan via migrasi/coexistence resmi provider.
+4. Payment MVP tetap QRIS manual + COD; payment gateway menyusul.
+5. Inbox human CS multi-agent.
+6. Delivery MVP berupa handoff ke merchant; GoSend/kurir berada di luar flow WhatsApp platform.
+7. Target awal layanan terjangkau untuk 4–8 UMKM dengan setup dibantu.
+8. Provider-agnostic via boundary stabil, bukan abstraction prematur.
 
-## 2. WhatsApp Pairing dari Dashboard
+## 2. Mengapa Baileys Development-Only
 
-### 2.1 User Experience
+Baileys memakai protokol WhatsApp Web yang bukan API resmi:
 
-Admin Dashboard memiliki halaman `/whatsapp`:
+- Risiko logout, limit, atau banned tanpa SLA.
+- Tidak ada jaminan stabilitas dari WhatsApp.
+- Setiap nomor butuh session/device state yang harus dioperasikan.
+- Sulit horizontal scaling dan menjamin uptime.
+- QR pairing adalah credential sensitif.
 
-```text
-WhatsApp Connection
-
-[ QR code ]
-
-WhatsApp on the cafe phone → Settings
-Linked devices → Link a device
-Point it at this code
-
-Status: Not paired / Connecting / Connected
-Last message: ...
-
-[Unpair]
-```
-
-Setelah paired:
-
-- QR disembunyikan.
-- Status menjadi `Connected`.
-- Tampilkan nomor/device jika tersedia.
-- Tampilkan waktu koneksi terakhir.
-- Tampilkan pesan error/reconnect terakhir.
-
-Saat admin menekan `Unpair`:
-
-1. Admin API membuat command `whatsapp.unpair`.
-2. Bot memutus socket.
-3. Credential tersimpan dihapus.
-4. QR baru dibuat.
-5. Status kembali `not_paired`.
-
-### 2.2 Arsitektur Pairing
-
-Jangan expose internal service sebagai `http://whatsapp:8787` dari browser. Browser hanya berbicara ke `admin-api`.
+Posisi Baileys:
 
 ```text
-Admin Web
-  ↓ HTTP / polling atau SSE
-Admin API
-  ↓ Redis command/status
-Bot Engine + Baileys
-  ↓ WhatsApp WebSocket
-WhatsApp
+Development adapter:
+- berguna untuk local testing & demo internal;
+- tidak tercakup SLA production;
+- tidak dipakai untuk onboarding merchant;
+- dapat dilepas per channel account.
 ```
 
-### 2.3 State Storage
+## 3. Strategi Provider WhatsApp
+
+- **Production pilot:** satu BSP resmi yang mendukung Indonesia dan onboarding nomor existing.
+- **Jangka panjang:** evaluasi Cloud API direct jika jumlah merchant membuat biaya BSP tidak efisien.
+- **Pola:** webhook inbound + outbound via API provider.
+- **Ownership WABA:** merchant-owned; platform menyimpan reference (`waba_id`, `phone_number_id`) tanpa mengambil alih aset.
+- **Onboarding:** verifikasi ownership, lalu migrasi penuh atau coexistence (tergantung dukungan provider/negara).
+- **Baileys:** dev-only, dipakai untuk demo/template Soysu sampai nomor production resmi aktif.
+- **Biaya:** Meta/BSP ditagihkan transparan sebagai pass-through; jangan disubsidi tanpa batas oleh platform.
+
+## 4. Existing Number Onboarding
 
 ```text
-id
-status                 -- not_paired | qr_ready | connecting | connected | disconnected
-phone_number
-device_name
-last_qr_at
-connected_at
-last_seen_at
-last_error
-updated_at
+Merchant hubungkan nomor existing
+  → cek jenis akun & status WABA
+  → verifikasi ownership
+  → pilih migrasi penuh / coexistence
+  → provisioning BSP
+  → webhook registration
+  → connected
 ```
 
-`wa_auth_state`:
+Status onboarding:
 
 ```text
-connection_id
-kind                   -- creds | key
-key_name
-value                  -- encrypted JSON/byte representation
-updated_at
+pending | verification_required | migration_required
+provisioning | connected | failed | suspended
 ```
 
-Credential dan signal keys harus disimpan terenkripsi. Jangan memasukkan credential ke response Admin API.
+Catatan penting:
 
-#### Redis
+- QR Baileys BUKAN metode migrasi ke Cloud API.
+- Coexistence tidak dijamin universal; validasi per provider.
+- Soysu menjadi nomor pertama untuk memvalidasi proses ini.
 
-```text
-whatsapp:qr:{connectionId}             TTL 120s
-whatsapp:command:{connectionId}        queue
-whatsapp:status:{connectionId}         short-lived status
-```
+## 5. Provider Adapter (BSP; Cloud API jangka panjang)
 
-QR hanya disimpan sementara. QR Baileys berupa string; Admin Web yang merendernya menjadi gambar QR.
-
-### 2.4 API
-
-```text
-GET  /api/whatsapp/status
-GET  /api/whatsapp/qr
-POST /api/whatsapp/connect
-POST /api/whatsapp/unpair
-GET  /api/whatsapp/events              -- optional SSE setelah polling stabil
-```
-
-MVP menggunakan polling 2-5 detik. SSE tidak diperlukan untuk pairing awal.
-
-Response status minimal:
-
-```json
-{
-  "status": "qr_ready",
-  "qr": "...",
-  "lastError": null,
-  "updatedAt": "..."
-}
-```
-
-### 2.5 Gateway Lifecycle
-
-```text
-start bot
-  ↓
-load auth state from PostgreSQL
-  ↓
-connect Baileys
-  ├── qr event       → persist status + Redis QR
-  ├── connection open → status connected
-  ├── connection close 401 → status not_paired
-  ├── connection close other → reconnect with backoff
-  └── creds.update    → persist encrypted state
-```
-
-`useMultiFileAuthState` yang sekarang dipakai hanya sebagai development fallback. Untuk target pairing dashboard, migrasikan ke database-backed auth state sebelum demo production.
-
-## 3. Dual-Channel Messaging Gateway
-
-Buat interface internal yang sama untuk WhatsApp dan Telegram:
+Kontrak internal (lihat `context-arch.md`):
 
 ```ts
 interface ChannelAdapter {
-  connect(): Promise<void>;
-  disconnect(): Promise<void>;
-  send(message: OutboundMessage): Promise<void>;
-  setTyping(conversationId: string, typing: boolean): Promise<void>;
-  onMessage(handler: (message: InboundMessage) => Promise<void>): void;
+  receiveEvent(event: unknown): Promise<void>;
+  sendText(message: OutboundMessage): Promise<SendResult>;
+  sendMedia(message: OutboundMediaMessage): Promise<SendResult>;
+  sendTemplate(message: TemplateMessage): Promise<SendResult>;
 }
 ```
 
-Adapter:
+Business logic tidak mengenal payload Meta, JID Baileys, atau payload BSP.
+
+## 6. Tenant-Aware Message Routing
+
+Inbound webhook:
 
 ```text
-apps/bot/src/gateway/
-├── types.ts
-├── baileys.ts
-├── telegram.ts
-├── normalize.ts
-├── debounce.ts
-└── outbound.ts
+verify signature
+  → resolve channel_account dari phone_number_id
+  → resolve tenant
+  → dedup (channel_account_id + external_message_id)
+  → normalize → persist → debounce → agent/human
 ```
 
-WhatsApp dan Telegram menghasilkan `InboundMessage` yang sama. Business logic tidak boleh mengetahui detail JID atau Telegram update object.
+Jika `phone_number_id` tidak dikenal: tolak/simpan sebagai unmatched event + alert. Jangan membuat tenant baru otomatis.
 
-### Urutan implementasi
+## 7. Migrasi dari Baileys Runtime
 
-1. WhatsApp pairing + inbound/outbound.
-2. Redis debounce.
-3. Agent processing.
-4. Telegram adapter.
+Tahapan:
 
-Jangan mengerjakan dua gateway sekaligus sebelum WhatsApp vertical slice lulus.
+1. Tambah `channel_accounts`; setiap nomor jadi satu account.
+2. Pertahankan Baileys sebagai adapter sementara (dev).
+3. Tambah adapter BSP + webhook.
+4. Jalankan nomor baru (atau nomor migrasi resmi) lewat BSP dulu.
+5. Setelah stabil, hentikan Baileys per account, bukan global.
+6. Histori conversation dipertahankan via `tenant_id + channel_account_id + customer`.
 
-## 4. Dual-Layer Memory
+Domain order/payment/conversation TIDAK berubah saat migrasi; hanya adapter yang diganti.
 
-### 4.1 Short-Term Session Memory
+## 8. QRIS Manual & COD
 
-Redis key:
+### QRIS manual
 
 ```text
-session:{channel}:{conversationId}
+checkout → tampilkan QRIS merchant + total → pending_payment
+→ customer kirim bukti → proof_submitted
+→ admin cocokkan mutasi → paid | rejected
 ```
 
-TTL: **2 jam sejak interaksi terakhir**.
+- QRIS config per tenant (`payment_configs`).
+- Snapshot QRIS per order.
+- Verifikasi dicatat `verified_by`/`verified_at`.
+- Screenshot bukan bukti final; admin cek mutasi/dashboard merchant.
 
-Value minimal:
-
-```json
-{
-  "conversationId": "wa:628xxx@s.whatsapp.net",
-  "currentCart": [
-    {
-      "productId": "soysu-002",
-      "qty": 2,
-      "sweetnessLevel": "Less Sugar"
-    }
-  ],
-  "conversationStage": "cart_building",
-  "lastIntent": "cart_building",
-  "updatedAt": "..."
-}
-```
-
-Aturan:
-
-- Pesan dalam 2 jam melanjutkan session.
-- Setelah 2 jam, `currentCart` dihapus/diarsipkan.
-- Customer profile tetap ada.
-- Cart abandoned diarsipkan setelah 24 jam melalui scheduled cleanup.
-- Cart/order durable tetap PostgreSQL; Redis hanya accelerator/session state.
-
-### 4.2 Persistent Customer Profile
-
-Tambahkan tabel `customer_preferences`:
+### COD
 
 ```text
-customer_id
-preferred_sweetness
-favorite_flavor
-default_delivery_area
-default_address
-source                  -- explicit | inferred
-confidence
-updated_at
+checkout → konfirmasi merchant/admin → processing
+→ handoff ke merchant → delivery di luar platform
 ```
 
-Aturan keamanan:
+- Platform mencatat metode COD dan handoff; collection/settlement merchant berada di luar MVP.
 
-- Preferensi hanya disimpan jika eksplisit atau confidence cukup.
-- Jangan menyimpan data sensitif yang tidak diperlukan.
-- Customer dapat meminta penghapusan profil.
+## 9. Human Inbox
 
-### 4.3 Memory Retrieval
+- Handover jadi inbox multi-agent, bukan sekadar pause bot.
+- Human dapat kirim pesan keluar (role `human`) via outbox.
+- Bot pause/resume sesuai status handover.
+- Trigger: low confidence, frustrasi, bulk order, tool failure berulang, permintaan eksplisit.
+- Collision prevention saat dua CS membuka chat yang sama.
 
-Sebelum agent run:
+## 10. Delivery (Handoff ke Merchant)
+
+- Saat pembayaran/COD terkonfirmasi, order siap di-handoff ke merchant.
+- Merchant mengatur GoSend/kurir sendiri di luar flow WhatsApp platform.
+- Platform hanya mencatat alamat, area, ongkir, dan status handoff.
+- Dispatch, tracking otomatis, driver app, dan COD settlement ditunda.
+
+## 11. Pilot Rollout
 
 ```text
-Inbound burst
-  ↓
-load session Redis
-  ↓
-load customer profile PostgreSQL
-  ↓
-build agent context
-  ↓
-run Anvia
+Phase 0 → provider & existing-number validation (Soysu)
+Phase 1-2 → multi-tenant + channel account
+Phase 3 → messaging & inbox
+Phase 4-6 → commerce, payment, delivery handoff
+Phase 7-8 → workspace, tracing, usage/cost + hardening
+Phase 9 → pilot Soysu → 4-8 merchant UMKM beta → launch
 ```
 
-Setelah agent run:
-
-```text
-update session TTL
-persist cart/order/message
-update explicit preference if applicable
-```
-
-## 5. Anvia Orchestration
-
-Target logic:
-
-```text
-Inbound message
-  ↓
-Debounce + memory context
-  ↓
-Intent Router
-  ├── FAQ / product explanation → Hybrid RAG
-  ├── stock / cart / shipping   → Transactional tools
-  ├── checkout                  → Order + payment flow
-  └── frustration / bulk order  → Human handover
-  ↓
-Response formatter
-  ↓
-Typing delay + outbound adapter
-```
-
-### Catatan API Anvia
-
-Jangan mengklaim implementasi sebagai DAG/multi-node sebelum API Anvia yang tersedia mendukung node graph tersebut. Untuk MVP, gunakan satu `AgentBuilder` dengan tools dan explicit routing instruction. Tambahkan node terpisah hanya jika:
-
-- API Anvia sudah diverifikasi;
-- setiap node memiliki test;
-- routing memberi manfaat nyata.
-
-Ini mencegah abstraksi DAG palsu yang hanya menambah file.
-
-## 6. Intent Router dan Provider Strategy
-
-### MVP
-
-- OpenAI via Anvia.
-- Satu model router/agent.
-- Intent dapat berupa structured output atau tool selection Anvia.
-- Tidak ada fallback provider dahulu.
-
-### Fase berikutnya
-
-Provider capability matrix:
-
-```text
-provider
-model
-tool_calling
-structured_output
-streaming
-max_context
-error_classification
-```
-
-Provider target:
-
-1. Gemini.
-2. OpenRouter.
-3. GLM/ZAI jika tool calling dan error contract kompatibel.
-
-Round-robin key picker hanya untuk key provider yang sama. Fallback tidak boleh mengulang tool transactional secara buta.
-
-## 7. RAG Revision
-
-### Retrieval
-
-```text
-query rewrite
-  ↓
-dense pgvector HNSW
-  ↓
-sparse Indonesian-aware search
-  ↓
-score = 0.7 dense + 0.3 sparse
-  ↓
-parent expansion
-  ↓
-Cohere reranker (optional, after baseline)
-  ↓
-top 3 context + confidence threshold
-```
-
-### Ingestion
-
-```text
-Admin upload
-  ↓
-document version = indexing
-  ↓
-parent chunks ~400 tokens
-  ↓
-child chunks ~100 tokens
-  ↓
-embedding
-  ↓
-vector + metadata persist
-  ↓
-only then mark version active
-```
-
-Jika indexing gagal, versi aktif lama tetap digunakan. Ini adalah error handling untuk mencegah data knowledge rusak, bukan compatibility fallback.
-
-### Admin upload
-
-MVP menerima `.md`/`.txt` dahulu. PDF parsing ditambahkan setelah alur text stabil. Jangan menggabungkan upload, PDF OCR, chunking, embedding, dan reranking dalam satu fase.
-
-## 8. Transactional Tools
-
-### `checkStock`
-
-- Query PostgreSQL langsung.
-- Tidak menggunakan RAG.
-- Tidak boleh mengarang harga/stok.
-
-### `cartManager`
-
-- Add/remove/update item.
-- Validasi sweetness.
-- Session 2 jam di Redis.
-- Durable cart di PostgreSQL.
-
-### `shippingCalculator`
-
-Area MVP:
-
-- Depok/Sleman.
-- Bantul.
-- Kota Yogyakarta.
-
-Output harus menyebutkan area valid/invalid dan biaya ongkir.
-
-### `checkout`
-
-- Wajib explicit confirmation.
-- Reserve stock transactionally.
-- Simpan snapshot harga.
-- COD → `payment_status = not_required`.
-- Transfer/QRIS → `payment_status = pending`.
-
-### `generateReceipt`
-
-Tahap MVP:
-
-1. Text receipt deterministik.
-2. HTML/PDF dari template.
-3. Image receipt hanya jika benar-benar diperlukan.
-
-Receipt harus bisa dicetak ulang dari Admin API.
-
-## 9. Admin Dashboard Revision
-
-### Menu
-
-```text
-Dashboard
-├── WhatsApp Connection
-├── Orders
-├── Payments
-├── Notifications
-├── Conversations / Handover
-├── Products & Stock
-└── Knowledge Base
-```
-
-### Dynamic graphs
-
-Graph hanya dinamis untuk:
-
-#### Memory
-
-- inbound messages per hari;
-- active sessions;
-- bot vs human messages;
-- handover rate;
-- response latency.
-
-#### Knowledge
-
-- RAG query per hari;
-- no-answer rate;
-- retrieval confidence;
-- top knowledge documents;
-- indexing success/failure.
-
-Order, revenue, dan stock cukup menggunakan cards/tables pada MVP.
-
-### Notifications
-
-Order baru otomatis:
-
-```text
-checkout
-  ↓
-create order + notification row
-  ↓
-Orders queue: pending_confirmation / pending_payment
-  ↓
-notification badge + polling dashboard
-```
-
-Event penting:
-
-- order baru;
-- bukti transfer masuk;
-- payment paid/expired;
-- stok kritis;
-- handover request;
-- WhatsApp disconnected.
-
-MVP memakai polling. SSE hanya setelah data dan event sudah stabil.
-
-### Admin framework
-
-Repo saat ini memakai Vite + React. Jangan migrasi ke Next.js 14 + Shadcn hanya karena target dokumen menyebutkannya, kecuali requirement hackathon mengharuskannya. Migrasi framework bukan fitur bisnis dan tidak membantu pairing/RAG/order flow.
-
-## 10. Execution Order Revision
-
-### Milestone A — Pairing vertical slice
-
-- [ ] PostgreSQL-backed Baileys auth state.
-- [ ] `wa_connections` status.
-- [ ] QR event → Redis TTL → Admin API.
-- [ ] Dashboard `/whatsapp` menampilkan QR/status.
-- [ ] Unpair menghapus credential dan membuat QR baru.
-
-### Milestone B — WhatsApp message loop
-
-- [ ] Normalize inbound WhatsApp.
-- [ ] Persist message.
-- [ ] Redis debounce 5 detik.
-- [ ] Generate reply dengan Anvia.
-- [ ] Typing indicator + outbound.
-- [ ] Bot pause saat handover.
-
-### Milestone C — Memory
-
-- [ ] Redis session TTL 2 jam.
-- [ ] Cart archive setelah 24 jam.
-- [ ] Customer profile/preferences.
-- [ ] Re-engagement context.
-
-### Milestone D — RAG and tools
-
-- [ ] Durable parent-child ingestion.
-- [ ] Dense + sparse retrieval.
-- [ ] `checkStock`, `cartManager`, `shippingCalculator`.
-- [ ] Query/rag event logging.
-
-### Milestone E — Order and manual payment
-
-- [ ] COD.
-- [ ] Bank transfer/QRIS manual.
-- [ ] Proof attachment.
-- [ ] Admin verification.
-- [ ] Receipt text/PDF.
-- [ ] Notification order/payment.
-
-### Milestone F — Telegram
-
-- [ ] Telegram adapter.
-- [ ] Shared debounce/agent pipeline.
-- [ ] Shared order/memory/profile logic.
-
-### Milestone G — Resilience and optimization
-
-- [ ] Provider capability tests.
-- [ ] Round-robin keys.
-- [ ] Safe read-only fallback.
-- [ ] Query rewriting/reranking.
-- [ ] Observability and evaluation.
-
-## 11. Acceptance Criteria Revisi
-
-- [ ] `moon run :dev` starts bot, admin-api, and admin-web without `tsx/vite command not found`.
-- [ ] Admin can open `/whatsapp`, see a fresh QR, scan it, and see `connected`.
-- [ ] Unpair removes stored auth and shows a new QR.
-- [ ] WhatsApp burst messages become one agent run after 5 seconds.
-- [ ] Session cart survives within 2 hours and resets after expiry.
-- [ ] Customer preferences persist independently from short-term cart.
-- [ ] Stock and price always come from PostgreSQL.
-- [ ] RAG answers use active knowledge version and report no-answer when confidence is low.
-- [ ] COD and manual transfer/QRIS flows create notifications and enter the correct admin queue.
-- [ ] Handover pauses bot responses.
-- [ ] Telegram uses the same normalized message pipeline after WhatsApp passes.
-- [ ] Provider fallback does not duplicate order/payment side effects.
-
-## 12. Explicitly Deferred
-
-- Google Agents CLI/ADK integration.
-- Next.js migration.
-- Full multi-provider fallback before capability tests.
-- Cohere reranking before baseline retrieval evaluation.
-- OCR/PDF ingestion before Markdown/text ingestion is stable.
-- Receipt image rendering before text/PDF receipt is reliable.
-- Multi-instance WhatsApp scaling before database-backed auth state is verified.
+## 12. Production Exit Criteria
+
+Yang TIDAK lagi menjadi acceptance criteria production:
+
+- Admin scan QR Baileys sebagai flow production.
+- Baileys reconnect sebagai core reliability.
+- Global WhatsApp connection `default`.
+- Single admin token.
+- Single shared knowledge base.
+- Single global catalog.
+
+Kriteria production:
+
+- Merchant onboarding via BSP berhasil (nomor existing).
+- Webhook signature verified; dedup bekerja.
+- Outbox + delivery status bekerja.
+- Tenant isolation tervalidasi.
+- Handover + human outbound bekerja.
+- QRIS manual & COD state machine bekerja.
+- Delivery handoff ke merchant tercatat; GoSend/kurir berada di luar flow platform.
+- Di luar jam kerja, bot tidak membuat order aktif dan memberi pesan bahwa proses menunggu jam kerja.
+- Platform operator dapat melihat health, usage, cost, dan AI trace seluruh tenant dengan audit.
+- Observability, backup, dan runbook tersedia.
+
+## 13. Explicitly Deferred
+
+- Payment gateway otomatis (Xendit/Midtrans/DOKU).
+- Omnichannel Instagram/TikTok.
+- Import katalog marketplace.
+- Iklan CTWA + CAPI.
+- Telegram.
+- Multi-provider LLM fallback kompleks.
+- Reranker Cohere.
+- Receipt image.
+- Billing engine kompleks.
+- Isolasi deployment per tenant.
+- Banyak provider WhatsApp sekaligus aktif (satu production provider dulu).
+- Integrasi GoSend/courier otomatis dan driver app.
